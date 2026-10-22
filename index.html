@@ -999,6 +999,7 @@ function openSale(id){
     ${st.balance>0&&!canc?`<div class="sec"><h2>Encaisser un paiement</h2></div><div class="card">
       <label for="pa" style="margin-top:0">Montant (FCFA)</label><input id="pa" inputmode="numeric" value="${next?next.balance:st.balance}">
       <div class="grid2"><div><label for="pm">Moyen</label><select id="pm">${methodOpts()}</select></div><div><label for="pr">Référence</label><input id="pr" placeholder="Facultatif"></div></div>
+      <label for="pd">Date du paiement</label><input id="pd" type="date" value="${today()}" max="${today()}">
       <label for="pc2">Encaissé par</label><select id="pc2">${collectorOpts(s)}</select>
       <p class="note" id="perr" style="color:var(--bad)"></p><button class="btn" id="pay" style="margin-top:6px">Enregistrer le paiement</button>
       <p class="note">Un paiement mobile est noté « à vérifier » : l'application ne le confirme pas auprès de l'opérateur.</p></div>`:''}
@@ -1013,9 +1014,11 @@ function openSale(id){
       const amt=num(o.el,'pa'),err=$('#perr',o.el);err.textContent='';
       if(!amt){err.textContent='Saisissez un montant.';return}
       if(amt>st.balance){err.textContent='Ce montant dépasse le reste à payer ('+money(st.balance)+').';return}
+      const pdv=val(o.el,'pd')||today();if(pdv>today()){err.textContent='La date ne peut pas être dans le futur.';return}
       pb.disabled=true;
       const pid=uid('y');
-      await put('payments',pid,{number:nextNumber('R'),saleId:id,clientId:s.clientId,amount:amt,kind:'versement',method:val(o.el,'pm'),ref:val(o.el,'pr').trim(),collector:val(o.el,'pc2')||DIRECT,date:today(),time:new Date().toISOString(),agent:ME.id});
+      await put('payments',pid,{number:nextNumber('R'),saleId:id,clientId:s.clientId,amount:amt,kind:'versement',method:val(o.el,'pm'),ref:val(o.el,'pr').trim(),collector:val(o.el,'pc2')||DIRECT,date:pdv,time:new Date().toISOString(),agent:ME.id});
+      if(pdv!==today())await logAct('Paiement daté',ref(s)+' · '+money(amt)+' reçu le '+fdate(pdv));
       toast('Paiement enregistré');setTimeout(()=>openPayment(pid),300);
     };
   }
@@ -1266,7 +1269,7 @@ document.addEventListener('click',e=>{
   if(c){e.preventDefault();e.stopPropagation();copyText(c.dataset.copy)}
 },true);
 /* ========= Mode simple : photos des produits, voix en wolof, vente guidée ========= */
-const SIMPLE_KEY='sap_simple',SELLER_KEY='sap_seller';
+const SIMPLE_KEY='sap_simple',SELLER_KEY='sap_seller_fixed';
 const lsg=k=>{try{return localStorage.getItem(k)||''}catch(e){return''}};
 const lss=(k,v)=>{try{v?localStorage.setItem(k,v):localStorage.removeItem(k)}catch(e){}};
 const isSimple=()=>lsg(SIMPLE_KEY)==='1';
@@ -1393,13 +1396,14 @@ const GI={
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 function openGuided(){
-  const g={step:'',phone:'',client:null,pid:'',qty:1,type:'',months:0,dep:0,method:'Espèces',seller:lsg(SELLER_KEY),buf:'',ref:'',sid:''};
+  const g={step:'',phone:'',client:null,pid:'',qty:1,type:'',months:0,dep:0,method:'Espèces',seller:lsg(SELLER_KEY),buf:'',ref:'',sid:'',price:0,newPhone:''};
   const o=sheet('Vente guidée','',()=>{});
   const prod=()=>byId(S.products,g.pid);
-  const unit=()=>{const p=prod();return p?(g.type==='credit'?(p.creditPrice||p.price):p.price):0};
+  const cat=()=>{const p=prod();return p?(g.type==='credit'?(p.creditPrice||p.price):p.price):0};
+  const unit=()=>g.price||cat();
   const total=()=>unit()*g.qty;
-  const flow=()=>['phone','product','qty','type'].concat(g.type==='credit'?['months','deposit']:[]).concat((g.type==='credit'?g.dep>0:g.type==='cash')?['method']:[]).concat(['recap']);
-  const voiceMap={phone:'phone',product:'product',qty:'qty',type:'type',months:'months',deposit:'deposit',method:'method',recap:'recap',done:'done'};
+  const flow=()=>['phone'].concat(g.newPhone&&!g.client?['name']:[]).concat(['product','qty','type','price']).concat(g.type==='credit'?['months','deposit']:[]).concat((g.type==='credit'?g.dep>0:g.type==='cash')?['method']:[]).concat(['recap']);
+  const voiceMap={name:'phone',price:'type',phone:'phone',product:'product',qty:'qty',type:'type',months:'months',deposit:'deposit',method:'method',recap:'recap',done:'done'};
   const shell=(inner,opts={})=>{
     const fl=flow(),i=fl.indexOf(g.step),dots=i>=0?`<div class="gd-dots" aria-hidden="true">${fl.map((_,j)=>`<i class="${j<=i?'on':''}"></i>`).join('')}</div>`:'<div></div>';
     setBody(o,`<div class="gd"><div class="gd-top">${opts.noback?'<div style="width:56px"></div>':`<button type="button" id="gb" aria-label="Retour">${gsvg('back')}</button>`}${dots}<button type="button" id="gs" aria-label="Écouter la consigne">${gsvg('spk')}</button></div>${inner}</div>`);
@@ -1426,7 +1430,7 @@ function openGuided(){
   const stepSeller=()=>{
     const names=staffNames();
     shell(`<div class="gd-sub">Choisis ton nom</div><div class="tiles" style="grid-template-columns:1fr">${names.map(n=>`<button type="button" class="tile" data-n="${esc(n)}"><b style="font-size:26px">${esc(n)}</b></button>`).join('')||'<div class="empty">Aucun employé. Le dirigeant doit en ajouter (Plus > Employés).</div>'}</div>`,{noback:true});
-    o.el.querySelectorAll('[data-n]').forEach(b=>b.onclick=()=>{g.seller=b.dataset.n;lss(SELLER_KEY,g.seller);go('phone')});
+    o.el.querySelectorAll('[data-n]').forEach(b=>b.onclick=()=>{g.seller=b.dataset.n;go('phone')});
   };
   function draw(){
     if(!g.seller&&g.step!=='seller'){g.step='seller'}
@@ -1436,14 +1440,23 @@ function openGuided(){
       const digits=()=>g.buf;const found=()=>g.buf.length===9&&S.clients.find(c=>String(c.phone||'').replace(/\D/g,'').slice(-9)===g.buf);
       shell(`<div class="gd-big" id="gv"></div><div class="gd-sub" id="gn"></div>${keypad(9)}`);
       bindKeys(9,()=>{$('#gv',o.el).textContent=g.buf?g.buf.replace(/(\d{2})(\d{0,3})(\d{0,2})(\d{0,2})/,(m,a,b,c,d)=>[a,b,c,d].filter(Boolean).join(' ')):'';const f=found();$('#gn',o.el).textContent=g.buf.length===9?(f?f.name:'Nouveau client'):''},()=>g.buf.length===9,async()=>{
-        let c=found();
-        if(!c){const id=uid('c');c={id,name:'Client '+phoneShow(g.buf),phone:g.buf,created:today(),agent:ME.id,incomplete:true};await put('clients',id,{name:c.name,phone:c.phone,created:c.created,agent:c.agent,incomplete:true})}
-        g.client=c;g.phone=g.buf;go('product');
+        let c=found();g.phone=g.buf;
+        if(!c){g.newPhone=g.buf;g.client=null;go('name');return}
+        g.newPhone='';g.client=c;go('product');
       });
+    }else if(st==='name'){
+      shell(`<div class="gd-sub">Nom du client</div><div class="gd-big" style="font-size:22px">${esc(phoneShow(g.newPhone))}</div><input id="gnm" placeholder="Prénom et nom" autocomplete="off" style="font-size:22px;padding:16px"><div class="gd-err" id="ge"></div><button type="button" class="gd-ok" id="go" aria-label="Valider">${gsvg('ok')}</button><button type="button" class="gd-no" id="gx">Passer, sans nom</button>`);
+      const mk=async nm=>{const id=uid('c');const name=nm||('Client '+phoneShow(g.newPhone));const d={name,phone:g.newPhone,created:today(),agent:ME.id,incomplete:!nm};await put('clients',id,d);g.client={id,...d};go('product')};
+      $('#go',o.el).onclick=()=>{const nm=val(o.el,'gnm').trim();if(!nm){$('#ge',o.el).textContent='Écris le nom, ou touche « Passer ».';return}mk(nm)};
+      $('#gx',o.el).onclick=()=>mk('');
+    }else if(st==='price'){
+      const c=cat();
+      shell(`<div class="gd-sub">Prix de 1 ${esc(prod().name)}</div><div class="gd-big" id="gv">${fmtN(c)}</div><div class="gd-sub" id="gn" style="opacity:.8">Valide pour garder ce prix, ou tape un autre prix</div>${keypad(9)}`);
+      bindKeys(9,()=>{$('#gv',o.el).textContent=fmtN(g.buf?Number(g.buf):c);$('#gn',o.el).textContent=g.buf&&Number(g.buf)!==c?'Prix changé (normal : '+fmtN(c)+')':'Valide pour garder ce prix, ou tape un autre prix'},()=>!g.buf||Number(g.buf)>0,()=>{g.price=g.buf?Number(g.buf):0;next()});
     }else if(st==='product'){
       const L=S.products.slice().sort((a,b)=>a.name.localeCompare(b.name));
       shell(`<div class="tiles">${L.map(p=>{const q=stockOf(p.id);return `<button type="button" class="tile ${q<=0?'dim':''}" data-p="${p.id}" ${q<=0?'disabled':''}>${p.img?`<img src="${p.img}" alt="">`:`<div class="tph" aria-hidden="true">${esc(p.name.trim().charAt(0).toUpperCase())}</div>`}<b>${fmtN(p.price)}</b><small>${esc(p.name)}</small></button>`}).join('')||'<div class="empty">Aucun produit. Le dirigeant doit en ajouter.</div>'}</div>`);
-      o.el.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{g.pid=b.dataset.p;g.qty=1;go('qty')});
+      o.el.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{g.pid=b.dataset.p;g.qty=1;g.price=0;go('qty')});
     }else if(st==='qty'){
       const p=prod(),mx=stockOf(p.id);
       shell(`<div class="tile" style="cursor:default">${p.img?`<img src="${p.img}" alt="">`:''}<small>${esc(p.name)}</small></div><div class="qty"><button type="button" id="qm" aria-label="Moins">−</button><b id="qv">${g.qty}</b><button type="button" id="qp" aria-label="Plus">+</button></div><div class="gd-sub">En stock : ${mx}</div><button type="button" class="gd-ok" id="go" aria-label="Valider">${gsvg('ok')}</button>`);
@@ -1453,7 +1466,7 @@ function openGuided(){
     }else if(st==='type'){
       const p=prod();
       shell(`<div class="tiles" style="grid-template-columns:1fr"><button type="button" class="tile huge" data-t="cash">${gsvg('cash')}<div class="n">${fmtN(p.price*g.qty)}</div><small>Comptant</small></button><button type="button" class="tile huge" data-t="credit">${gsvg('cal')}<div class="n">${fmtN((p.creditPrice||p.price)*g.qty)}</div><small>Crédit</small></button></div>`);
-      o.el.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{g.type=b.dataset.t;g.months=0;g.dep=0;next()});
+      o.el.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{g.type=b.dataset.t;g.months=0;g.dep=0;g.price=0;next()});
     }else if(st==='months'){
       shell(`<div class="tiles">${[1,2,3,4].map(n=>`<button type="button" class="tile huge" data-m="${n}">${gsvg('cal')}<div class="n">${n}</div></button>`).join('')}</div>`);
       o.el.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{g.months=Number(b.dataset.m);next()});
@@ -1470,7 +1483,7 @@ function openGuided(){
       shell(`<div class="gd-card"><div class="row2"><span>${esc(g.client.name)}</span><b>${g.qty} × ${esc(p.name)}</b></div><div class="tot2">${fmtN(t)} FCFA</div>
         ${g.type==='credit'?`<div class="row2"><span>Acompte</span><b>${fmtN(g.dep)}</b></div>${sch.map(e=>`<div class="row2"><span>${e.n}. ${fdate(e.due)}</span><b>${fmtN(e.amount)}</b></div>`).join('')}`:`<div class="row2"><span>Comptant</span><b>${esc(g.method)}</b></div>`}</div>
         <div class="gd-err" id="ge"></div><button type="button" class="gd-ok" id="go" aria-label="Valider la vente">${gsvg('ok')}</button><button type="button" class="gd-no" id="gx">Recommencer</button>`);
-      $('#gx',o.el).onclick=()=>{g.client=null;g.pid='';g.type='';go('phone')};
+      $('#gx',o.el).onclick=()=>{g.client=null;g.pid='';g.type='';g.price=0;go('phone')};
       $('#go',o.el).onclick=async()=>{
         const ge=$('#ge',o.el),btn=$('#go',o.el);ge.textContent='';
         if(stockOf(p.id)<g.qty){ge.textContent='Stock insuffisant.';return}
@@ -1481,7 +1494,8 @@ function openGuided(){
         btn.disabled=true;
         let slot;const sid=uid('s'),num_=nextNumber('V');
         try{slot=await takePage(bk?bk.num:null,bk?bk.chief:g.seller,sid,tel,bk?bk.owner:(ME.id||''))}catch(e){ge.textContent='Pas de connexion ou facture indisponible. Réessaie.';btn.disabled=false;return}
-        const date=today(),u=unit(),lines=[{productId:p.id,name:p.name,qty:g.qty,price:u,listPrice:u}];
+        const date=today(),u=unit(),lines=[{productId:p.id,name:p.name,qty:g.qty,price:u,listPrice:cat()}];
+        if(u!==cat())await logAct('Prix modifié','F'+slot.f+'P'+slot.p+' · '+p.name+' : '+fmtN(cat())+' → '+fmtN(u));
         await put('sales',sid,{number:num_,date,clientId:g.client.id,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller:g.seller,lines,total:t,type:g.type,deposit:g.type==='credit'?g.dep:0,months:sch.length||0,schedule:sch,created:new Date().toISOString(),guided:true});
         if(payNow>0)await put('payments',uid('y'),{number:nextNumber('R'),saleId:sid,clientId:g.client.id,amount:payNow,kind:g.type==='credit'?'acompte':'comptant',method:g.method,ref:'',collector:ME.isAdmin?DIRECT:g.seller,date,time:new Date().toISOString(),agent:ME.id,byAdmin:ME.isAdmin});
         await put('moves',uid('m'),{productId:p.id,qty:-g.qty,type:'vente',date,note:num_,agent:ME.id});
