@@ -652,7 +652,7 @@ function vClients(v){
   const owe=c=>S.sales.filter(s=>s.clientId===c.id&&!isCancelled(s)).reduce((a,s)=>a+saleState(s,P,now).balance,0);
   v.innerHTML=`<div class="sec"><h2>Clients</h2><span>${L.length}</span></div>
   <input class="search" id="q" type="search" placeholder="Nom ou téléphone" value="${esc(query)}">
-  <div class="list">${L.length?L.map(c=>{const o=owe(c);return `<div class="row" data-client="${c.id}"><div class="l"><b>${esc(c.name)}</b><small>${esc(c.phone||'Sans téléphone')}${c.address?' · '+esc(c.address):''}</small></div><div class="r">${o>0?`<b>${money(o)}</b><small>dû</small>`:'<span class="pill ok">À jour</span>'}</div></div>`}).join(''):'<div class="empty">Aucun client. Ajoutez le premier avec le bouton ci-dessous.</div>'}</div>
+  <div class="list">${L.length?L.map(c=>{const o=owe(c);return `<div class="row" data-client="${c.id}"><div class="l"><b>${esc(c.name)}</b><small>${esc(c.phone||'Sans téléphone')}${c.address?' · '+esc(c.address):''}${c.nameVoice?' · 🎙 nom à écouter':''}</small></div><div class="r">${o>0?`<b>${money(o)}</b><small>dû</small>`:'<span class="pill ok">À jour</span>'}</div></div>`}).join(''):'<div class="empty">Aucun client. Ajoutez le premier avec le bouton ci-dessous.</div>'}</div>
   <button class="btn fab" data-act="newclient">+ Client</button>`;
   bindSearch(v);bindRows(v);
 }
@@ -704,6 +704,7 @@ function openClientForm(id){
   const c=id?byId(S.clients,id):null;
   sheet(c?'Modifier le client':'Nouveau client',`
     <label for="cn">Nom complet *</label><div style="display:flex;gap:8px"><input id="cn" value="${esc(c&&c.name)}" autocomplete="off" autocapitalize="words" style="flex:1;min-width:0">${speechAPI()?'<button type="button" class="btn sec2 sm" id="cmic" aria-label="Dire le nom" style="flex:none">🎤 Dire</button>':''}</div>
+    ${c&&c.nameVoice?`<audio controls src="${c.nameVoice}" style="width:100%;margin-top:6px"></audio>`:''}
     <label for="cp">Téléphone</label><input id="cp" type="tel" inputmode="tel" value="${esc(c&&c.phone)}">
     <label for="cv">Ville ou commune</label><input id="cv" list="villes" value="${esc(c&&c.city)}" placeholder="Ex. Dakar, Thiès, Touba"><datalist id="villes"><option>Dakar</option><option>Pikine</option><option>Guédiawaye</option><option>Rufisque</option><option>Thiès</option><option>Mbour</option><option>Touba</option><option>Diourbel</option><option>Kaolack</option><option>Saint-Louis</option><option>Ziguinchor</option><option>Louga</option><option>Tambacounda</option><option>Kolda</option></datalist>
     <label for="ca">Quartier et adresse</label><input id="ca" value="${esc(c&&c.address)}" placeholder="Ex. Parcelles Assainies, Unité 15, villa 120">
@@ -721,7 +722,7 @@ function openClientForm(id){
       const dup=S.clients.find(x=>x.id!==(c&&c.id)&&phone&&x.phone===phone);
       if(dup&&!el.dataset.sure){$('#dup',el).textContent='Attention : '+dup.name+' a déjà ce numéro. Touchez encore « Enregistrer » pour créer quand même.';el.dataset.sure=1;return}
       const nid=c?c.id:uid('c');
-      await put('clients',nid,{...(c||{}),name,phone,city:val(el,'cv').trim(),address:val(el,'ca').trim(),landmark:val(el,'cm').trim(),geo,job:val(el,'cj').trim(),idno:val(el,'ci').trim(),created:c?c.created:today(),agent:c?c.agent:ME.id});
+      await put('clients',nid,{...(c||{}),name,phone,city:val(el,'cv').trim(),address:val(el,'ca').trim(),landmark:val(el,'cm').trim(),geo,job:val(el,'cj').trim(),idno:val(el,'ci').trim(),created:c?c.created:today(),agent:c?c.agent:ME.id,incomplete:/^Client\s/.test(name),nameVoice:/^Client\s/.test(name)?((c&&c.nameVoice)||''):''});
       toast('Client enregistré');o.close();if(!c&&o.after)o.after(nid);
     };
   });
@@ -734,7 +735,7 @@ function openClient(id){
     const P=pays(),now=today();
     const L=S.sales.filter(s=>s.clientId===id&&!isCancelled(s)).sort((a,b)=>b.date.localeCompare(a.date)).map(s=>({s,st:saleState(s,P,now)}));
     const owed=L.reduce((a,x)=>a+x.st.balance,0);
-    setBody(o,`<div class="card"><div class="tot"><span>Téléphone</span><b>${esc(cc.phone||'—')}</b></div><div class="tot"><span>Ville</span><b style="text-align:right">${esc(cc.city||'—')}</b></div><div class="tot"><span>Adresse</span><b style="text-align:right">${esc(cc.address||'—')}</b></div>${cc.landmark?`<div class="tot"><span>Repère</span><b style="text-align:right">${esc(cc.landmark)}</b></div>`:''}<div class="tot"><span>Profession</span><b>${esc(cc.job||'—')}</b></div><div class="tot g"><span>Reste à payer</span><span>${money(owed)}</span></div></div>
+    setBody(o,`${cc.nameVoice?`<div class="card" style="margin-bottom:10px"><b>Nom dit à la voix par l'employé</b><audio controls src="${cc.nameVoice}" style="width:100%;margin-top:8px"></audio><p class="note" style="margin:6px 0 0">Écoute, puis touche « Modifier » pour écrire le nom.</p></div>`:''}<div class="card"><div class="tot"><span>Téléphone</span><b>${esc(cc.phone||'—')}</b></div><div class="tot"><span>Ville</span><b style="text-align:right">${esc(cc.city||'—')}</b></div><div class="tot"><span>Adresse</span><b style="text-align:right">${esc(cc.address||'—')}</b></div>${cc.landmark?`<div class="tot"><span>Repère</span><b style="text-align:right">${esc(cc.landmark)}</b></div>`:''}<div class="tot"><span>Profession</span><b>${esc(cc.job||'—')}</b></div><div class="tot g"><span>Reste à payer</span><span>${money(owed)}</span></div></div>
     ${phoneIntl(cc.phone)?`<div class="acts" style="margin-top:10px"><a href="tel:+${phoneIntl(cc.phone)}">Appeler</a><a class="wa" href="https://wa.me/${phoneIntl(cc.phone)}" target="_blank" rel="noopener">WhatsApp</a><button type="button" data-copy="${esc(cc.name+' +'+phoneIntl(cc.phone))}">Contact</button></div>`:''}
     ${cc.geo||cc.address||cc.city?`<a class="btn sec2" style="display:block;text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="${esc(cc.geo||('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent([cc.address,cc.city,'Sénégal'].filter(Boolean).join(', '))))}">${cc.geo?'Ouvrir la position du client':'Chercher l\'adresse sur la carte'}</a>`:'<p class="note">Aucune localisation. Touchez « Modifier » pour l\'ajouter.</p>'}
     <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="ns">Nouvelle vente</button><button class="btn line" id="ed">Modifier</button></div>
@@ -1420,17 +1421,25 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
+const APP_VER='22-10 · v3';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
 function listenName(btn,onText,onErr){
-  const SR=speechAPI();if(!SR){onErr('La voix n\'est pas disponible sur ce téléphone. Écris le nom.');return}
+  const SR=speechAPI();if(!SR){if(btn.onfatal)btn.onfatal('absent');else onErr('La voix n\'est pas disponible sur ce téléphone. Écris le nom.');return}
   if(btn._rec){try{btn._rec.stop()}catch(e){}return}
-  const r=new SR();r.lang='fr-FR';r.interimResults=false;r.maxAlternatives=1;btn._rec=r;btn.classList.add('rec');onErr('');
+  const sp=btn.querySelector('span'),lab=sp?sp.textContent:'',setL=t=>{if(sp)sp.textContent=t};
+  const r=new SR();r.lang='fr-FR';r.interimResults=false;r.maxAlternatives=1;btn._rec=r;onErr('');
+  r.onstart=()=>{btn.classList.add('rec');setL('Je t\'écoute…')};
   r.onresult=e=>{const t=((e.results[0]&&e.results[0][0]&&e.results[0][0].transcript)||'').trim();if(t)onText(t.replace(/(^|[\s'-])(\p{L})/gu,(m,a,b)=>a+b.toUpperCase()))};
-  r.onerror=e=>onErr(e.error==='not-allowed'||e.error==='service-not-allowed'?'Micro refusé. Autorise-le dans les réglages du navigateur.':e.error==='no-speech'?'Rien entendu. Touche le micro et dis le nom.':e.error==='network'?'La voix demande internet. Écris le nom.':'Voix indisponible. Écris le nom.');
-  r.onend=()=>{btn._rec=null;btn.classList.remove('rec')};
-  try{r.start()}catch(e){btn._rec=null;btn.classList.remove('rec');onErr('Voix indisponible. Écris le nom.')}
+  r.onerror=e=>{
+    const k=e.error;
+    if(k==='no-speech'||k==='aborted'){onErr(k==='no-speech'?'Rien entendu. Touche le micro et dis le nom.':'');return}
+    if(k==='not-allowed'){onErr('Micro refusé. Autorise-le dans les réglages du navigateur.');return}
+    if(btn.onfatal)btn.onfatal(k);else onErr(k==='network'?'La voix demande internet. Écris le nom.':'Voix indisponible. Écris le nom.');
+  };
+  r.onend=()=>{btn._rec=null;btn.classList.remove('rec');setL(lab||'Dire le nom')};
+  try{r.start()}catch(e){btn._rec=null;btn.classList.remove('rec');if(btn.onfatal)btn.onfatal('start');else onErr('Voix indisponible. Écris le nom.')}
 }
 function openGuided(){
   const g={step:'',phone:'',client:null,pid:'',qty:1,type:'',months:0,dep:0,method:'Espèces',seller:lsg(SELLER_KEY),buf:'',ref:'',sid:'',price:0,newPhone:''};
@@ -1482,13 +1491,53 @@ function openGuided(){
         g.newPhone='';g.client=c;go('product');
       });
     }else if(st==='name'){
+      const hasSR=!!speechAPI(),canRec=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.MediaRecorder);
+      let recMode=!hasSR,mr=null;   // sans dictée automatique : on enregistre la voix du nom, le dirigeant l'écoutera
+      const baseNote=()=>recMode?(canRec?'Touche le micro et dis le nom du client. Ta voix sera gardée pour le dirigeant.':'Le micro ne marche pas ici. Écris le nom.'):'Touche le micro et dis le nom du client : il s\'écrit tout seul.';
       shell(`<div class="gd-sub">Nom du client</div><div class="gd-big" style="font-size:22px">${esc(phoneShow(g.newPhone))}</div>
-        ${speechAPI()?`<button type="button" class="gd-mic" id="gmic">${gsvg('mic')}<span>Dire le nom</span></button>`:''}
-        <input id="gnm" placeholder="Prénom et nom" autocomplete="off" autocapitalize="words" enterkeyhint="done" aria-label="Nom du client" style="font-size:22px;padding:16px"><div class="gd-err" id="ge"></div><button type="button" class="gd-ok" id="go" aria-label="Valider">${gsvg('ok')}</button><button type="button" class="gd-no" id="gx">Passer, sans nom</button>`);
-      const mic=$('#gmic',o.el);if(mic)mic.onclick=()=>listenName(mic,t=>{$('#gnm',o.el).value=t;$('#ge',o.el).textContent=''},m=>{$('#ge',o.el).textContent=m});
-      $('#gnm',o.el).onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#go',o.el).click()}};
-      const mk=async nm=>{const id=uid('c');const name=nm||('Client '+phoneShow(g.newPhone));const d={name,phone:g.newPhone,created:today(),agent:ME.id,incomplete:!nm};await put('clients',id,d);g.client={id,...d};go('product')};
-      $('#go',o.el).onclick=()=>{const nm=val(o.el,'gnm').trim();if(!nm){$('#ge',o.el).textContent='Écris le nom, ou touche « Passer ».';return}mk(nm)};
+        <button type="button" class="gd-mic" id="gmic">${gsvg('mic')}<span id="gml">Dire le nom</span></button>
+        <div class="gd-sub" id="gnote" style="min-height:40px">${esc(baseNote())}</div>
+        <audio id="gau" controls style="width:100%" ${g.nameAudio?`src="${g.nameAudio}"`:'hidden'}></audio>
+        <input id="gnm" placeholder="Prénom et nom" autocomplete="off" autocapitalize="words" enterkeyhint="done" aria-label="Nom du client" style="font-size:22px;padding:16px">
+        <div class="gd-err" id="ge"></div>
+        <button type="button" class="gd-ok" id="go" aria-label="Valider">${gsvg('ok')}</button>
+        <button type="button" class="gd-no" id="gx">Passer, sans nom</button>
+        ${ME.isAdmin&&!voiceDoc('name')?'<button type="button" class="gd-no" id="gvo" style="border-color:var(--gold);color:var(--ink)">Dirigeant : enregistrer ta voix pour cette étape</button>':''}
+        <div class="gd-sub" style="font-size:11px;opacity:.55">Version ${APP_VER}</div>`);
+      const mic=$('#gmic',o.el),inp=$('#gnm',o.el),err=m=>{$('#ge',o.el).textContent=m||''},note=t=>{$('#gnote',o.el).textContent=t},lbl=t=>{$('#gml',o.el).textContent=t};
+      // Dictée automatique : si le téléphone ne sait pas l'écouter, on passe à l'enregistrement de la voix.
+      mic.onfatal=()=>{recMode=true;note(baseNote());err('')};
+      async function recName(){
+        if(mr){try{mr.stop()}catch(e){}return}
+        if(!canRec){err('Le micro ne marche pas ici. Écris le nom.');return}
+        try{
+          const st=await navigator.mediaDevices.getUserMedia({audio:true});
+          const types=['audio/webm;codecs=opus','audio/mp4','audio/webm'];const mt=types.find(t=>window.MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t));
+          const r=new MediaRecorder(st,mt?{mimeType:mt,audioBitsPerSecond:24000}:{audioBitsPerSecond:24000});const ch=[];let tm;
+          r.ondataavailable=e=>{if(e.data&&e.data.size)ch.push(e.data)};
+          r.onstop=async()=>{
+            st.getTracks().forEach(t=>t.stop());clearTimeout(tm);mr=null;mic.classList.remove('rec');lbl('Dire le nom');
+            const blob=new Blob(ch,{type:r.mimeType||mt||'audio/webm'});
+            if(blob.size<800){err('Trop court. Touche le micro et dis le nom.');return}
+            if(blob.size>120000){err('Trop long. Dis seulement le nom.');return}
+            g.nameAudio=await new Promise(res=>{const f=new FileReader();f.onload=()=>res(f.result);f.readAsDataURL(blob)});
+            const au=$('#gau',o.el);if(au){au.src=g.nameAudio;au.hidden=false}
+            err('');note('Voix gardée. Touche la coche verte.');
+          };
+          r.start();mr=r;mic.classList.add('rec');lbl('Arrêter');err('');tm=setTimeout(()=>{try{r.stop()}catch(e){}},6000);
+        }catch(e){err('Micro refusé. Autorise-le dans les réglages du navigateur.')}
+      }
+      mic.onclick=()=>{if(recMode)recName();else listenName(mic,t=>{inp.value=t;err('');note('Nom écrit. Touche la coche verte, ou corrige-le.')},m=>err(m))};
+      const gvo=$('#gvo',o.el);if(gvo)gvo.onclick=()=>openVoices();
+      inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#go',o.el).click()}};
+      const mk=async nm=>{
+        const id=uid('c');const name=nm||('Client '+phoneShow(g.newPhone));
+        const d={name,phone:g.newPhone,created:today(),agent:ME.id,incomplete:!nm};
+        if(!nm&&g.nameAudio)d.nameVoice=g.nameAudio;
+        try{await put('clients',id,d)}catch(e){err('Client non enregistré : '+String((e&&e.message)||e).slice(0,100));return}
+        g.client={id,...d};g.nameAudio='';go('product');
+      };
+      $('#go',o.el).onclick=()=>{const nm=val(o.el,'gnm').trim();if(!nm&&!g.nameAudio){err('Dis le nom avec le micro, ou écris-le.');return}mk(nm)};
       $('#gx',o.el).onclick=()=>mk('');
     }else if(st==='price'){
       const c=cat();
@@ -1554,7 +1603,7 @@ function openSimpleSettings(){
   const o=sheet('Mode simple','',(el,o)=>{o.refresh=draw});
   function draw(){
     const names=staffNames(),cur=lsg(SELLER_KEY);
-    setBody(o,`<p class="note" style="margin-top:0">Pour les employés qui ne lisent pas : la vente se fait avec des photos, des chiffres et la voix du dirigeant en wolof.</p>
+    setBody(o,`<p class="note" style="margin-top:0">Version de l'application : ${APP_VER}.</p><p class="note">Pour les employés qui ne lisent pas : la vente se fait avec des photos, des chiffres et la voix du dirigeant en wolof.</p>
     <div class="card"><div class="tot"><span>Mode simple sur ce téléphone</span><b>${isSimple()?'Activé':'Désactivé'}</b></div>
     <div style="height:8px"></div><button class="btn" id="ts">${isSimple()?'Désactiver':'Activer'}</button></div>
     <label for="se">Employé qui utilise ce téléphone</label><select id="se"><option value="">Choisir…</option>${names.map(n=>`<option ${n===cur?'selected':''}>${esc(n)}</option>`).join('')}</select>
