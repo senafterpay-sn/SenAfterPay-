@@ -241,7 +241,7 @@ window.SAP_LIBS={h2c:'html2canvas.min.js',pdf:'jspdf.umd.min.js'};
     async me(){return{id:session.user.id,name:profile.name||session.user.email.split('@')[0]}},
     async canEdit(){return profile.role==='admin'},
     async isOwner(){return profile.role==='admin'},
-    async list(){const{data,error}=await sb.from('profiles').select('id,name,role,active').order('name');if(error)throw error;return data||[]},
+    async list(){const{data,error}=await sb.from('profiles').select('id,name,role,active,zone').order('name');if(error)throw error;return data||[]},
     async update(id,patch){const{error}=await sb.from('profiles').update(patch).eq('id',id);if(error)throw error},
     async audit(){const{data,error}=await sb.from('audit').select('*').order('at',{ascending:false}).limit(100);if(error)throw error;return data||[]},
     async profiles(ids){
@@ -349,6 +349,7 @@ async function init(){
     });
     setTimeout(()=>{if(!ready){ready=true;rerender()}},2500);
   }
+  loadProf();
   $('#who').innerHTML='<span class="badge">'+(ME.isAdmin?'Dirigeant':'Agent')+'</span>';
   render();
 }
@@ -400,37 +401,49 @@ function reminderText(e){
    La page est attribuée automatiquement. Chaque couple F+P est réservé (collection « slots »)
    avant d'enregistrer la vente : deux appareils ne peuvent pas obtenir la même page. */
 const PAGES=50;
-const bookOf=n=>S.invoices.find(b=>b.num===n);
+const ow=x=>(x&&x.owner)||'';
+const sh=o=>o?String(o).slice(0,8)+'-':'';
+const bkey=(o,n)=>sh(o)+'f'+n;
+const bookOf=(n,o)=>S.invoices.find(b=>b.num===n&&ow(b)===(o||''));
 const freedSales=()=>new Set(S.cancels.filter(c=>c.saleId&&c.free).map(c=>c.saleId));
-function usedPages(n){const u=new Set(),fr=freedSales();S.sales.forEach(s=>{if(s.fnum===n&&!fr.has(s.id))u.add(s.page)});S.slots.forEach(x=>{if(x.fnum===n&&x.saleId&&!fr.has(x.saleId))u.add(x.page)});return u}
-function books(){
-  const nums=new Set([...S.invoices.map(b=>b.num),...S.sales.filter(s=>s.fnum).map(s=>s.fnum)]);
-  return[...nums].sort((a,b)=>a-b).map(n=>{const u=usedPages(n).size;return{num:n,chief:(bookOf(n)||{}).chief||'',used:u,open:u<PAGES}});
+function usedPages(n,o){o=o||'';const u=new Set(),fr=freedSales();S.sales.forEach(s=>{if(s.fnum===n&&ow(s)===o&&!fr.has(s.id))u.add(s.page)});S.slots.forEach(x=>{if(x.fnum===n&&ow(x)===o&&x.saleId&&!fr.has(x.saleId))u.add(x.page)});return u}
+const PROF={};
+async function loadProf(){try{const u=await claude.use('user');if(u&&u.list){const L=await u.list();L.forEach(p=>PROF[p.id]={name:p.name,zone:p.zone||'',active:p.active!==false,role:p.role});rerender()}}catch(e){}}
+const ownerName=o=>o?((PROF[o]&&PROF[o].name)||NAMES[o]||(o===ME.id?(ME.name||'Moi'):'Agent')):'Anciennes factures';
+const ownerZone=o=>(o&&PROF[o]&&PROF[o].zone)||'';
+function books(o){
+  const keys=new Map();
+  S.invoices.forEach(b=>keys.set(ow(b)+'|'+b.num,{num:b.num,owner:ow(b)}));
+  S.sales.filter(s=>s.fnum).forEach(s=>keys.set(ow(s)+'|'+s.fnum,{num:s.fnum,owner:ow(s)}));
+  let L=[...keys.values()];
+  if(o!==undefined)L=L.filter(b=>b.owner===(o||''));else if(!ME.isAdmin&&ME.id)L=L.filter(b=>b.owner===ME.id);
+  return L.sort((a,b)=>a.num-b.num).map(b=>{const u=usedPages(b.num,b.owner).size;return{num:b.num,owner:b.owner,chief:(bookOf(b.num,b.owner)||{}).chief||'',used:u,open:u<PAGES}});
 }
-const nextFnum=()=>books().reduce((m,b)=>Math.max(m,b.num),0)+1;
-const nextPage=n=>{const u=usedPages(n);for(let p=1;p<=PAGES;p++)if(!u.has(p))return p;return 0};
-const chiefOf=s=>(s.fnum&&(bookOf(s.fnum)||{}).chief)||'—';
-const chiefTelOf=n=>{const b=bookOf(n)||{};const st=S.staff.find(x=>x.name===b.chief);return b.chiefTel||(st&&st.phone)||''};
+const nextFnum=o=>books(o||'').reduce((m,b)=>Math.max(m,b.num),0)+1;
+const nextPage=(n,o)=>{const u=usedPages(n,o);for(let p=1;p<=PAGES;p++)if(!u.has(p))return p;return 0};
+const chiefOf=s=>(s.fnum&&(bookOf(s.fnum,ow(s))||{}).chief)||'—';
+const chiefTelOf=(n,o)=>{const b=bookOf(n,o)||{};const st=S.staff.find(x=>x.name===b.chief);return b.chiefTel||(st&&st.phone)||''};
 const okTel=t=>String(t||'').replace(/\D/g,'').length>=9;
 const staffNames=()=>S.staff.filter(x=>x.active!==false).map(x=>x.name);
-async function claimSlot(f,p,saleId){
-  if(!DB)return !S.sales.some(s=>s.fnum===f&&s.page===p);
-  const d=DB.doc('slots/F'+f+'P'+p);
+async function claimSlot(f,p,saleId,o){
+  o=o||'';
+  if(!DB)return !S.sales.some(s=>s.fnum===f&&s.page===p&&ow(s)===o);
+  const d=DB.doc('slots/'+sh(o)+'F'+f+'P'+p);
   const r=await d.acquire({holder:ME.id||('t'+Math.random().toString(36).slice(2)),ttlMs:5000});
   if(!r.acquired)return false;
   const g=await d.get();if(g.exists&&g.data().saleId)return false;
-  await d.set({saleId,fnum:f,page:p,by:ME.id||'',at:Date.now()});
+  await d.set({saleId,fnum:f,page:p,owner:o,by:ME.id||'',at:Date.now()});
   return true;
 }
-// Donne la prochaine page libre de la facture choisie ; si elle est pleine, ouvre la facture suivante (même chef).
-async function takePage(pref,chiefIfNew,saleId,telIfNew){
-  let f=pref;
+// Donne la prochaine page libre de la facture choisie (de cet agent) ; si elle est pleine, ouvre la suivante (même chef).
+async function takePage(pref,chiefIfNew,saleId,telIfNew,o){
+  o=o||'';let f=pref;
   for(let guard=0;guard<80;guard++){
-    if(f==null||!books().some(b=>b.num===f&&b.open)){
-      f=nextFnum();await put('invoices','f'+f,{num:f,chief:chiefIfNew,chiefTel:telIfNew||'',created:today()});
+    if(f==null||!books(o).some(b=>b.num===f&&b.open)){
+      f=nextFnum(o);await put('invoices',bkey(o,f),{num:f,owner:o,chief:chiefIfNew,chiefTel:telIfNew||'',created:today()});
     }
-    const u=usedPages(f);
-    for(let p=1;p<=PAGES;p++){if(u.has(p))continue;if(await claimSlot(f,p,saleId))return{f,p};u.add(p)}
+    const u=usedPages(f,o);
+    for(let p=1;p<=PAGES;p++){if(u.has(p))continue;if(await claimSlot(f,p,saleId,o))return{f,p,o};u.add(p)}
     f=null;
   }
   throw new Error('Aucune page disponible');
@@ -595,8 +608,12 @@ function vBooks(v){
   const A=allSales();
   let body='';
   if(bookView==='books'){
-    const B=books().sort((a,b)=>b.num-a.num).filter(b=>!q||('f'+b.num).includes(q)||b.chief.toLowerCase().replace(/\s/g,'').includes(q));
-    body=B.length?`<div class="list">${B.map(b=>`<div class="row" data-book="${b.num}"><div class="l"><b>Facture F${b.num}</b><small>Chef : ${esc(b.chief||'non défini')}</small><div class="bar" aria-hidden="true"><i style="width:${Math.round(b.used/PAGES*100)}%"></i></div></div><div class="r"><b>${b.used}/${PAGES}</b><span class="pill ${b.open?'':'warn'}">${b.open?'Ouverte':'Complète'}</span></div></div>`).join('')}</div>`:'<div class="empty">Aucune facture. Elles se créent automatiquement avec la première vente.</div>';
+    const B=books().sort((a,b)=>b.num-a.num).filter(b=>!q||('f'+b.num).includes(q)||b.chief.toLowerCase().replace(/\s/g,'').includes(q)||ownerName(b.owner).toLowerCase().replace(/\s/g,'').includes(q)||ownerZone(b.owner).toLowerCase().replace(/\s/g,'').includes(q));
+    const rowB=b=>`<div class="row" data-book="${b.owner}|${b.num}"><div class="l"><b>Facture F${b.num}</b><small>Chef : ${esc(b.chief||'non défini')}</small><div class="bar" aria-hidden="true"><i style="width:${Math.round(b.used/PAGES*100)}%"></i></div></div><div class="r"><b>${b.used}/${PAGES}</b><span class="pill ${b.open?'':'warn'}">${b.open?'Ouverte':'Complète'}</span></div></div>`;
+    if(!B.length)body='<div class="empty">Aucune facture. Le directeur en crée une pour chaque agent (bouton + Facture).</div>';
+    else if(ME.isAdmin){const g={};B.forEach(b=>(g[b.owner]=g[b.owner]||[]).push(b));
+      body=Object.keys(g).sort((x,y)=>ownerName(x).localeCompare(ownerName(y))).map(o=>`<div class="sec"><h2>${esc(ownerName(o))}${ownerZone(o)?' · '+esc(ownerZone(o)):''}</h2><span>${g[o].length} facture${g[o].length>1?'s':''}</span></div><div class="list">${g[o].map(rowB).join('')}</div>`).join('')}
+    else body=`<div class="list">${B.map(rowB).join('')}</div>`;
   }else{
     const by={};A.forEach(x=>{if(x.c){(by[x.c.id]=by[x.c.id]||{c:x.c,r:[]}).r.push(x.s)}});
     const L=Object.values(by).filter(g=>!q||(g.c.name+g.r.map(s=>ref(s)+(s.seller||'')+chiefOf(s)).join(' ')).toLowerCase().replace(/\s/g,'').includes(q)).sort((a,b)=>a.c.name.localeCompare(b.c.name));
@@ -607,7 +624,7 @@ function vBooks(v){
   <input class="search" id="q" type="search" placeholder="Client, facture (F5P8) ou chef" value="${esc(query)}">${body}
   ${ME.isAdmin?'<button class="btn fab" data-act="newbook">+ Facture</button>':''}`;
   v.querySelectorAll('#bv button').forEach(b=>b.onclick=()=>{bookView=b.dataset.v;query='';render()});
-  v.querySelectorAll('[data-book]').forEach(r=>r.onclick=()=>openBook(Number(r.dataset.book)));
+  v.querySelectorAll('[data-book]').forEach(r=>r.onclick=()=>{const[o,n]=r.dataset.book.split('|');openBook(Number(n),o)});
   bindSearch(v);bindRows(v);
 }
 function vClients(v){
@@ -783,34 +800,39 @@ function openStaff(){
 
 function openNewBook(){
   const names=staffNames();
-  sheet('Nouvelle facture',names.length?`<p class="note" style="margin-top:0">La facture F${nextFnum()} aura ${PAGES} pages, attribuées automatiquement à chaque vente.</p>
+  const o=sheet('Nouvelle facture',names.length?`<label for="no">Agent propriétaire de cette facture</label><select id="no"><option value="${ME.id||''}">Moi (directeur)</option></select><p class="note" id="nz" style="margin-top:6px"></p>
+  <p class="note" id="nn" style="margin-top:0"></p>
   <label for="nc">Chef qui gère cette facture</label><select id="nc">${names.map(n=>`<option>${esc(n)}</option>`).join('')}</select>
-  <label for="nt">Téléphone du chef (obligatoire)</label><input id="nt" inputmode="tel" placeholder="77 123 45 67"><p class="note" id="err" style="color:var(--bad)"></p><div style="height:14px"></div><button class="btn" id="ok">Créer la facture</button>`:'<div class="empty">Ajoutez d\'abord vos employés (Accueil, « Gérer les employés »).</div>',(el,o)=>{
+  <label for="nt">Téléphone du chef (obligatoire)</label><input id="nt" inputmode="tel" placeholder="77 123 45 67"><p class="note" id="err" style="color:var(--bad)"></p><div style="height:14px"></div><button class="btn" id="ok">Créer la facture</button>`:'<div class="empty">Ajoutez d\'abord vos employés (Plus, « Employés »).</div>',(el,o)=>{
     const ok=$('#ok',el);if(!ok)return;
-    const nc=$('#nc',el),nt=$('#nt',el);const fill=()=>{const x=S.staff.find(q=>q.name===nc.value);nt.value=x&&x.phone?phoneShow(x.phone):''};nc.onchange=fill;fill();
-    ok.onclick=async()=>{if(!okTel(nt.value)){$('#err',el).textContent='Le numéro de téléphone du chef de facture est obligatoire.';return}const n=nextFnum();ok.disabled=true;await put('invoices','f'+n,{num:n,chief:val(el,'nc'),chiefTel:nt.value.trim(),created:today()});toast('Facture F'+n+' créée');o.close()};
+    const no=$('#no',el),nc=$('#nc',el),nt=$('#nt',el);
+    Object.keys(PROF).filter(i=>i!==ME.id&&PROF[i].role!=='admin'&&PROF[i].active).forEach(i=>{const op=document.createElement('option');op.value=i;op.textContent=PROF[i].name+(PROF[i].zone?' · '+PROF[i].zone:'');no.appendChild(op)});
+    const note=()=>{$('#nn',el).textContent='La facture F'+nextFnum(no.value)+' de cet agent aura '+PAGES+' pages, attribuées automatiquement à ses ventes.'};no.onchange=note;note();
+    const fill=()=>{const x=S.staff.find(q=>q.name===nc.value);nt.value=x&&x.phone?phoneShow(x.phone):''};nc.onchange=fill;fill();
+    ok.onclick=async()=>{if(!okTel(nt.value)){$('#err',el).textContent='Le numéro de téléphone du chef de facture est obligatoire.';return}const ow_=no.value,n=nextFnum(ow_);ok.disabled=true;await put('invoices',bkey(ow_,n),{num:n,owner:ow_,chief:val(el,'nc'),chiefTel:nt.value.trim(),created:today()});toast('Facture F'+n+' créée');o.close()};
   });
 }
-function openBook(n){
+function openBook(n,o_){
+  o_=o_||'';
   const o=sheet('Facture F'+n,'',(el,o)=>{o.refresh=draw});
   function draw(){
-    const b=books().find(x=>x.num===n);if(!b){o.close();return}
+    const b=books(o_).find(x=>x.num===n);if(!b){o.close();return}
     const P=pays(),now=today();
-    const rows=S.sales.filter(s=>s.fnum===n&&!isCancelled(s)).sort((a,b)=>a.page-b.page).map(s=>({s,c:byId(S.clients,s.clientId),st:saleState(s,P,now)}));
-    const used=usedPages(n);const free=[];for(let p=1;p<=PAGES;p++)if(!used.has(p))free.push(p);
+    const rows=S.sales.filter(s=>s.fnum===n&&ow(s)===o_&&!isCancelled(s)).sort((a,b)=>a.page-b.page).map(s=>({s,c:byId(S.clients,s.clientId),st:saleState(s,P,now)}));
+    const used=usedPages(n,o_);const free=[];for(let p=1;p<=PAGES;p++)if(!used.has(p))free.push(p);
     const ranges=[];free.forEach(p=>{const l=ranges[ranges.length-1];if(l&&l[1]===p-1)l[1]=p;else ranges.push([p,p])});
     const names=staffNames();if(b.chief&&!names.includes(b.chief))names.push(b.chief);
-    setBody(o,`<div class="card"><div class="tot"><span>Chef de la facture</span><b>${esc(b.chief||'Non défini')}</b></div>
-      <div class="tot"><span>Téléphone du chef</span><b>${esc(chiefTelOf(n)?phoneShow(chiefTelOf(n)):'À renseigner')}</b></div>
-      ${ME.isAdmin?`<label for="bt">Modifier le téléphone du chef</label><div style="display:flex;gap:8px"><input id="bt" inputmode="tel" value="${esc(chiefTelOf(n))}"><button class="btn sm" id="st2" style="flex:none">Enregistrer</button></div>`:''}
+    setBody(o,`<div class="card">${o_?`<div class="tot"><span>Agent</span><b>${esc(ownerName(o_))}${ownerZone(o_)?' · '+esc(ownerZone(o_)):''}</b></div>`:''}<div class="tot"><span>Chef de la facture</span><b>${esc(b.chief||'Non défini')}</b></div>
+      <div class="tot"><span>Téléphone du chef</span><b>${esc(chiefTelOf(n,o_)?phoneShow(chiefTelOf(n,o_)):'À renseigner')}</b></div>
+      ${ME.isAdmin?`<label for="bt">Modifier le téléphone du chef</label><div style="display:flex;gap:8px"><input id="bt" inputmode="tel" value="${esc(chiefTelOf(n,o_))}"><button class="btn sm" id="st2" style="flex:none">Enregistrer</button></div>`:''}
       <div class="tot"><span>Pages utilisées</span><b>${b.used} / ${PAGES}</b></div><div class="bar" aria-hidden="true"><i style="width:${Math.round(b.used/PAGES*100)}%"></i></div>
       <p class="note">${free.length?'Pages libres : '+ranges.map(r=>r[0]===r[1]?'P'+r[0]:'P'+r[0]+' à P'+r[1]).join(', '):'Facture complète.'}</p>
       ${ME.isAdmin&&names.length?`<label for="bc">Changer le chef</label><div style="display:flex;gap:8px"><select id="bc">${names.map(x=>`<option ${x===b.chief?'selected':''}>${esc(x)}</option>`).join('')}</select><button class="btn sm" id="sc2" style="flex:none">Enregistrer</button></div>`:''}</div>
     <div class="sec"><h2>Clients et pages</h2><span>${rows.length}</span></div>
     <div class="list">${rows.length?rows.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>P${x.s.page} · ${esc(x.c?x.c.name:'Client')}</b><small>${fdate(x.s.date)} · ${esc(trLabel(x.s))} · ${esc(sellerOf(x.s))}</small></div><div class="r"><b>${money(x.s.total)}</b><span class="pill ${stPill(x.st.status)}">${x.st.status}</span></div></div>`).join(''):'<div class="empty">Aucune page utilisée.</div>'}</div>`);
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
-    const st2=$('#st2',o.el);if(st2)st2.onclick=async()=>{const t=val(o.el,'bt').trim();if(!okTel(t)){toast('Numéro obligatoire (9 chiffres)');return}await put('invoices','f'+n,{...(bookOf(n)||{num:n,created:today()}),chiefTel:t});toast('Téléphone enregistré')};
-    const sc=$('#sc2',o.el);if(sc)sc.onclick=async()=>{const nm=val(o.el,'bc'),x=S.staff.find(q=>q.name===nm);const cur=bookOf(n)||{num:n,created:today()};const typed=val(o.el,'bt').trim(),tel=(x&&x.phone)||(typed!==chiefTelOf(n)?typed:'');if(!okTel(tel)){toast('Saisissez le téléphone du nouveau chef puis réessayez');return}await put('invoices','f'+n,{...cur,chief:nm,chiefTel:tel});await logAct('Chef de facture changé','F'+n+' : '+(b.chief||'—')+' → '+val(o.el,'bc'));toast('Chef enregistré')};
+    const st2=$('#st2',o.el);if(st2)st2.onclick=async()=>{const t=val(o.el,'bt').trim();if(!okTel(t)){toast('Numéro obligatoire (9 chiffres)');return}await put('invoices',bkey(o_,n),{...(bookOf(n,o_)||{num:n,owner:o_,created:today()}),chiefTel:t});toast('Téléphone enregistré')};
+    const sc=$('#sc2',o.el);if(sc)sc.onclick=async()=>{const nm=val(o.el,'bc'),x=S.staff.find(q=>q.name===nm);const cur=bookOf(n,o_)||{num:n,owner:o_,created:today()};const typed=val(o.el,'bt').trim(),tel=(x&&x.phone)||(typed!==chiefTelOf(n,o_)?typed:'');if(!okTel(tel)){toast('Saisissez le téléphone du nouveau chef puis réessayez');return}await put('invoices',bkey(o_,n),{...cur,chief:nm,chiefTel:tel});await logAct('Chef de facture changé','F'+n+' : '+(b.chief||'—')+' → '+val(o.el,'bc'));toast('Chef enregistré')};
   }
   draw();
 }
@@ -819,6 +841,7 @@ function openBook(n){
 const METHODS=['Espèces','Wave','Orange Money','Virement','Autre'];
 const methodOpts=()=>METHODS.map(m=>`<option>${m}</option>`).join('');
 const ref_=sl=>'F'+sl.f+'P'+sl.p;
+const bk_=v=>{const i=String(v).indexOf('|');return{o:v.slice(0,i),n:Number(v.slice(i+1))}};
 function openNewSale(clientId){
   if(!S.products.length){toast('Ajoutez d\'abord des produits (onglet Stock)');return}
   const w={clientId:clientId||'',lines:[{pid:'',qty:1,price:null}],type:'cash',sched:[]};
@@ -862,14 +885,14 @@ function openNewSale(clientId){
     const sb=$('#sb',el),sch=$('#sch',el);
     function fillBooks(keep){
       const B=books().filter(b=>b.open).sort((a,b)=>b.num-a.num);
-      sb.innerHTML=B.map(b=>`<option value="${b.num}">F${b.num} · chef ${esc(b.chief||'—')} · ${b.used}/${PAGES} pages</option>`).join('')+`<option value="new">Nouvelle facture (F${nextFnum()})</option>`;
-      sb.value=keep&&[...sb.options].some(o=>o.value===keep)?keep:(B.length?String(B[0].num):'new');
+      sb.innerHTML=B.map(b=>`<option value="${b.owner}|${b.num}">F${b.num}${ME.isAdmin&&b.owner?' ('+esc(ownerName(b.owner))+')':''} · chef ${esc(b.chief||'—')} · ${b.used}/${PAGES} pages</option>`).join('')+`<option value="new">Nouvelle facture (F${nextFnum(ME.id)})</option>`;
+      sb.value=keep&&[...sb.options].some(o=>o.value===keep)?keep:(B.length?B[0].owner+'|'+B[0].num:'new');
       const names=staffNames();const prev=B.length?B[0].chief:'';
       sch.innerHTML=names.map(n=>`<option ${n===(prev||sv.value)?'selected':''}>${esc(n)}</option>`).join('');
       $('#nbx',el).hidden=sb.value!=='new'||!names.length;
       const stf=S.staff.find(x=>x.name===sch.value);if(sb.value==='new'&&!$('#nct',el).value&&stf&&stf.phone)$('#nct',el).value=phoneShow(stf.phone);
-      $('#nbt',el).hidden=sb.value==='new'||!!chiefTelOf(Number(sb.value));
-      $('#sbh',el).textContent=sb.value==='new'?'La page P1 sera attribuée automatiquement.':'Page attribuée automatiquement : P'+nextPage(Number(sb.value))+' (la facture compte '+PAGES+' pages au maximum).';
+      $('#nbt',el).hidden=sb.value==='new'||!!chiefTelOf(bk_(sb.value).n,bk_(sb.value).o);
+      $('#sbh',el).textContent=sb.value==='new'?'La page P1 sera attribuée automatiquement.':'Page attribuée automatiquement : P'+nextPage(bk_(sb.value).n,bk_(sb.value).o)+' (la facture compte '+PAGES+' pages au maximum).';
     }
     sch.onchange=()=>{const x=S.staff.find(q=>q.name===sch.value);$('#nct',el).value=x&&x.phone?phoneShow(x.phone):''};
     sb.onchange=()=>fillBooks(sb.value);sb.onfocus=()=>fillBooks(sb.value);
@@ -935,15 +958,15 @@ function openNewSale(clientId){
       }
       const date=w.type==='credit'?(val(el,'sd')||today()):today();
       const isNew=sb.value==='new',telV=(isNew?val(el,'nct'):val(el,'nbp')).trim();
-      if((isNew||!chiefTelOf(Number(sb.value)))&&!okTel(telV)){err.textContent='Le numéro de téléphone du chef de facture est obligatoire.';return}
+      if((isNew||!chiefTelOf(bk_(sb.value).n,bk_(sb.value).o))&&!okTel(telV)){err.textContent='Le numéro de téléphone du chef de facture est obligatoire.';return}
       const sorted=sched.map((e,i)=>({n:i+1,due:e.due,amount:e.amount}));
       const sid=uid('s'),num_=nextNumber('V');
       $('#ok',el).disabled=true;
       const lines=L.map(l=>{const p=byId(S.products,l.pid);return{productId:p.id,name:p.name,qty:l.qty,price:unit(l),listPrice:catalog(p)}});
       let slot;
-      try{const prefB=sb.value==='new'?null:Number(sb.value);const inherit=sb.value==='new'?(sch.value||seller):((bookOf(prefB)||{}).chief||seller);if(prefB!=null&&!chiefTelOf(prefB)){const bk=bookOf(prefB)||{num:prefB,created:today()};await put('invoices','f'+prefB,{...bk,chiefTel:telV})}slot=await takePage(prefB,inherit,sid,telV)}
+      try{const pb=sb.value==='new'?{n:null,o:ME.id||''}:bk_(sb.value),prefB=pb.n;const inherit=sb.value==='new'?(sch.value||seller):((bookOf(prefB,pb.o)||{}).chief||seller);if(prefB!=null&&!chiefTelOf(prefB,pb.o)){const bk=bookOf(prefB,pb.o)||{num:prefB,owner:pb.o,created:today()};await put('invoices',bkey(pb.o,prefB),{...bk,chiefTel:telV})}slot=await takePage(prefB,inherit,sid,telV,pb.o)}
       catch(e){err.textContent='Impossible d\'attribuer une page de facture. Réessayez.';$('#ok',el).disabled=false;return}
-      await put('sales',sid,{number:num_,date,clientId:w.clientId,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,seller,lines,total:t,type:w.type,deposit:dep,months:sorted.length,schedule:sorted,created:new Date().toISOString()});
+      await put('sales',sid,{number:num_,date,clientId:w.clientId,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller,lines,total:t,type:w.type,deposit:dep,months:sorted.length,schedule:sorted,created:new Date().toISOString()});
       const method=val(el,'mm'),ref=val(el,'mr').trim();
       const amt=w.type==='credit'?dep:t;
       if(amt>0)await put('payments',uid('y'),{number:nextNumber('R'),saleId:sid,clientId:w.clientId,amount:amt,kind:w.type==='credit'?'acompte':'comptant',method,ref,collector:ME.isAdmin?DIRECT:seller,date:today(),time:new Date().toISOString(),agent:ME.id,byAdmin:ME.isAdmin});
@@ -1052,12 +1075,12 @@ async function makePDF(el,name,html){
 function openInvoice(sid){
   const s=byId(S.sales,sid),c=byId(S.clients,s.clientId),st=saleState(s,pays(),today());
   const doc=()=>docHTML('Facture '+ref(s),invoiceHTML(s,c,st));
-  const bk=s.fnum?(bookOf(s.fnum)||{}):null;
-  const miss=!!s.fnum&&(!bk.chief||!chiefTelOf(s.fnum));
+  const bk=s.fnum?(bookOf(s.fnum,ow(s))||{}):null;
+  const miss=!!s.fnum&&(!bk.chief||!chiefTelOf(s.fnum,ow(s)));
   const names=staffNames();if(bk&&bk.chief&&!names.includes(bk.chief))names.push(bk.chief);
   const fix=miss?`<div class="card" style="margin-bottom:12px"><b>Informations du chef de facture F${s.fnum} incomplètes</b><p class="note">Elles s'affichent sur la facture une fois renseignées.</p>
     <label for="fc">Chef de facture</label><select id="fc"><option value="">Choisir…</option>${names.map(n=>`<option ${n===bk.chief?'selected':''}>${esc(n)}</option>`).join('')}</select>
-    <label for="ft">Téléphone du chef (obligatoire)</label><input id="ft" inputmode="tel" value="${esc(chiefTelOf(s.fnum))}" placeholder="77 123 45 67">
+    <label for="ft">Téléphone du chef (obligatoire)</label><input id="ft" inputmode="tel" value="${esc(chiefTelOf(s.fnum,ow(s)))}" placeholder="77 123 45 67">
     <p class="note" id="ferr" style="color:var(--bad)"></p><button class="btn" id="fs">Enregistrer et mettre à jour la facture</button></div>`:'';
   const o=sheet('Facture '+ref(s),fix+invoiceHTML(s,c,st)+`<div style="display:flex;gap:8px;margin-top:12px"><button class="btn" id="pr">Imprimer / PDF</button><a class="btn sec2" id="wa" style="text-align:center;text-decoration:none" target="_blank" rel="noopener" href="${waLink(c,invoiceText(s,c,st))}">WhatsApp</a></div><p class="note">WhatsApp envoie le détail de la facture au client. Pour joindre la facture elle-même, touchez « Imprimer / PDF » : le PDF est enregistré sur votre téléphone, vous pouvez l'imprimer ou le joindre dans WhatsApp.</p>`,(el)=>{
     $('#pr',el).onclick=()=>makePDF($('.fx',el),'facture-'+ref(s)+'.pdf',doc());
@@ -1065,7 +1088,7 @@ function openInvoice(sid){
     if(fs)fs.onclick=async()=>{const nm=val(el,'fc'),t=val(el,'ft').trim();
       if(!nm){$('#ferr',el).textContent='Choisissez le chef de facture.';return}
       if(!okTel(t)){$('#ferr',el).textContent='Le téléphone du chef est obligatoire.';return}
-      await put('invoices','f'+s.fnum,{...(bookOf(s.fnum)||{num:s.fnum,created:today()}),chief:nm,chiefTel:t});
+      await put('invoices',bkey(ow(s),s.fnum),{...(bookOf(s.fnum,ow(s))||{num:s.fnum,owner:ow(s),created:today()}),chief:nm,chiefTel:t});
       toast('Facture mise à jour');o.close();setTimeout(()=>openInvoice(sid),250)};
   });
   return o;
@@ -1083,7 +1106,7 @@ function openCancelSale(sid){
       $('#cx',el).disabled=true;
       const free=val(el,'pg')==='free';
       await put('cancels','cs_'+sid,{saleId:sid,reason:r,by:ME.id,date:today(),free});
-      if(free&&s.fnum&&s.page){try{await DB.doc('slots/F'+s.fnum+'P'+s.page).delete()}catch(e){}}
+      if(free&&s.fnum&&s.page){try{await DB.doc('slots/'+sh(ow(s))+'F'+s.fnum+'P'+s.page).delete()}catch(e){}}
       for(const p of P)await put('cancels',uid('x'),{paymentId:p.id,reason:'Annulation de la vente '+ref(s)+' : '+r,by:ME.id,date:today()});
       for(const l of s.lines)await put('moves',uid('m'),{productId:l.productId,qty:l.qty,type:'annulation',date:today(),note:ref(s),agent:ME.id});
       await logAct('Vente annulée',ref(s)+' · '+money(s.total)+(free?' · page libérée':' · page laissée vide')+' · motif : '+r);
@@ -1452,14 +1475,14 @@ function openGuided(){
         const ge=$('#ge',o.el),btn=$('#go',o.el);ge.textContent='';
         if(stockOf(p.id)<g.qty){ge.textContent='Stock insuffisant.';return}
         const B=books().filter(b=>b.open).sort((a,b)=>b.num-a.num);
-        let bk=B.find(b=>b.chief===g.seller)||B[0],tel=bk?chiefTelOf(bk.num):'';
+        let bk=B.find(b=>b.chief===g.seller)||B[0],tel=bk?chiefTelOf(bk.num,bk.owner):'';
         if(bk&&!okTel(tel)){ge.textContent='Le téléphone du chef de la facture F'+bk.num+' manque. Appelle le dirigeant.';return}
         if(!bk){const sf=S.staff.find(x=>x.name===g.seller);tel=sf&&sf.phone||'';if(!ME.isAdmin||!okTel(tel)){ge.textContent='Aucune facture ouverte. Appelle le dirigeant.';return}}
         btn.disabled=true;
         let slot;const sid=uid('s'),num_=nextNumber('V');
-        try{slot=await takePage(bk?bk.num:null,bk?bk.chief:g.seller,sid,tel)}catch(e){ge.textContent='Pas de connexion ou facture indisponible. Réessaie.';btn.disabled=false;return}
+        try{slot=await takePage(bk?bk.num:null,bk?bk.chief:g.seller,sid,tel,bk?bk.owner:(ME.id||''))}catch(e){ge.textContent='Pas de connexion ou facture indisponible. Réessaie.';btn.disabled=false;return}
         const date=today(),u=unit(),lines=[{productId:p.id,name:p.name,qty:g.qty,price:u,listPrice:u}];
-        await put('sales',sid,{number:num_,date,clientId:g.client.id,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,seller:g.seller,lines,total:t,type:g.type,deposit:g.type==='credit'?g.dep:0,months:sch.length||0,schedule:sch,created:new Date().toISOString(),guided:true});
+        await put('sales',sid,{number:num_,date,clientId:g.client.id,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller:g.seller,lines,total:t,type:g.type,deposit:g.type==='credit'?g.dep:0,months:sch.length||0,schedule:sch,created:new Date().toISOString(),guided:true});
         if(payNow>0)await put('payments',uid('y'),{number:nextNumber('R'),saleId:sid,clientId:g.client.id,amount:payNow,kind:g.type==='credit'?'acompte':'comptant',method:g.method,ref:'',collector:ME.isAdmin?DIRECT:g.seller,date,time:new Date().toISOString(),agent:ME.id,byAdmin:ME.isAdmin});
         await put('moves',uid('m'),{productId:p.id,qty:-g.qty,type:'vente',date,note:num_,agent:ME.id});
         g.ref='F'+slot.f+'P'+slot.p;g.sid=sid;g.step='done';draw();playVoice('done');
@@ -1498,12 +1521,13 @@ async function openAccess(){
     let L=[];try{L=await u.list()}catch(e){}
     setBody(o,`<p class="note" style="margin-top:0">Un compte désactivé perd tout accès immédiatement. Ses ventes et ses paiements restent à son nom. Pour ajouter un agent : Supabase > Authentication > Users > Add user.</p>
     ${L.map(x=>`<div class="vrow"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b>${esc(x.name||'Sans nom')}</b><span class="pill ${x.active===false?'bad':'ok'}">${x.active===false?'Désactivé':(x.role==='admin'?'Directeur':'Actif')}</span></div>
-      <div style="display:flex;gap:8px;margin-top:8px"><input id="n_${x.id}" value="${esc(x.name)}" aria-label="Nom" style="flex:1;min-width:0"><button type="button" class="btn sm sec2" data-sv="${x.id}">Enregistrer</button></div>
+      <div style="display:flex;gap:8px;margin-top:8px"><input id="n_${x.id}" value="${esc(x.name)}" aria-label="Nom" style="flex:1;min-width:0"></div>
+      <div style="display:flex;gap:8px;margin-top:8px"><input id="z_${x.id}" value="${esc(x.zone||'')}" placeholder="Zone ou ville (ex. Pikine)" aria-label="Zone" style="flex:1;min-width:0"><button type="button" class="btn sm sec2" data-sv="${x.id}">Enregistrer</button></div>
       ${x.role==='admin'?'':`<button type="button" class="btn sm ${x.active===false?'':'danger'}" style="margin-top:8px" data-tg="${x.id}">${x.active===false?'Réactiver le compte':'Désactiver le compte'}</button>`}</div>`).join('')||'<div class="empty">Aucun compte.</div>'}
     <p class="note" id="aerr" style="color:var(--bad)"></p>`);
     const run=async(fn)=>{try{await fn();draw()}catch(e){$('#aerr',o.el).textContent='Refusé : '+(e&&e.message||'erreur')}};
-    o.el.querySelectorAll('[data-sv]').forEach(b=>b.onclick=()=>run(()=>u.update(b.dataset.sv,{name:(document.getElementById('n_'+b.dataset.sv)||{}).value||''})));
-    o.el.querySelectorAll('[data-tg]').forEach(b=>b.onclick=()=>run(()=>{const x=L.find(q=>q.id===b.dataset.tg);return u.update(x.id,{active:x.active===false})}));
+    o.el.querySelectorAll('[data-sv]').forEach(b=>b.onclick=()=>run(()=>u.update(b.dataset.sv,{name:(document.getElementById('n_'+b.dataset.sv)||{}).value||'',zone:(document.getElementById('z_'+b.dataset.sv)||{}).value||''}).then(loadProf)));
+    o.el.querySelectorAll('[data-tg]').forEach(b=>b.onclick=()=>run(()=>{const x=L.find(q=>q.id===b.dataset.tg);return u.update(x.id,{active:x.active===false}).then(loadProf)}));
   }
   draw();
 }
@@ -1538,7 +1562,7 @@ const FXCSS='<style>.fx{background:#fff;color:#0b1f66;font:14px/1.4 system-ui,-a
 const FXI={pin:'<svg viewBox="0 0 24 24"><path d="M12 22s7-6.2 7-12a7 7 0 10-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>',bld:'<svg viewBox="0 0 24 24"><path d="M4 21V8l8-5 8 5v13zM9 21v-5h6v5M8 11h2M14 11h2"/></svg>',tel:'<svg viewBox="0 0 24 24"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 005 5L15 13l5 2v4a2 2 0 01-2 2A16 16 0 013 6a2 2 0 012-2z"/></svg>',mail:'<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>',web:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>'};
 // Nom / prénom : le dernier mot est le nom de famille, le reste le prénom.
 function splitName(full){const p=String(full||'').trim().split(/\s+/).filter(Boolean);return p.length<2?{prenom:'',nom:p[0]||''}:{prenom:p.slice(0,-1).join(' '),nom:p[p.length-1]}}
-function chiefInfo(s){const nm=s.fnum&&(bookOf(s.fnum)||{}).chief||'';const st=S.staff.find(x=>x.name===nm);const n=splitName(nm);return{nom:n.nom,prenom:n.prenom,tel:chiefTelOf(s.fnum)?phoneShow(chiefTelOf(s.fnum)):''}}
+function chiefInfo(s){const nm=s.fnum&&(bookOf(s.fnum,ow(s))||{}).chief||'';const st=S.staff.find(x=>x.name===nm);const n=splitName(nm);return{nom:n.nom,prenom:n.prenom,tel:chiefTelOf(s.fnum,ow(s))?phoneShow(chiefTelOf(s.fnum,ow(s))):''}}
 function invoiceHTML(s,c,st){
   const co=comp(),f=n=>money(n).replace(' FCFA',''),ch=chiefInfo(s),cl=c||{};
   const row=(l,v)=>`<div class="fx-row"><b>${l} :</b><span>${esc(v||'')}</span></div>`;
