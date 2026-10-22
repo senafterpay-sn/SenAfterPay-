@@ -405,7 +405,8 @@ const ow=x=>(x&&x.owner)||'';
 const sh=o=>o?String(o).slice(0,8)+'-':'';
 const bkey=(o,n)=>sh(o)+'f'+n;
 const bookOf=(n,o)=>S.invoices.find(b=>b.num===n&&ow(b)===(o||''));
-const freedSales=()=>new Set(S.cancels.filter(c=>c.saleId&&c.free).map(c=>c.saleId));
+// Une vente annulée libère sa page, sauf si on a choisi « la laisser vide » (free:false). Les anciennes annulations (sans choix) libèrent aussi leur page.
+const freedSales=()=>new Set(S.cancels.filter(c=>c.saleId&&c.free!==false).map(c=>c.saleId));
 function usedPages(n,o){o=o||'';const u=new Set(),fr=freedSales();S.sales.forEach(s=>{if(s.fnum===n&&ow(s)===o&&!fr.has(s.id))u.add(s.page)});S.slots.forEach(x=>{if(x.fnum===n&&ow(x)===o&&x.saleId&&!fr.has(x.saleId))u.add(x.page)});return u}
 const PROF={};
 async function loadProf(){try{const u=await claude.use('user');if(u&&u.list){const L=await u.list();L.forEach(p=>PROF[p.id]={name:p.name,zone:p.zone||'',active:p.active!==false,role:p.role});rerender()}}catch(e){}}
@@ -425,21 +426,39 @@ const chiefOf=s=>(s.fnum&&(bookOf(s.fnum,ow(s))||{}).chief)||'—';
 const chiefTelOf=(n,o)=>{const b=bookOf(n,o)||{};const st=S.staff.find(x=>x.name===b.chief);return b.chiefTel||(st&&st.phone)||''};
 const okTel=t=>String(t||'').replace(/\D/g,'').length>=9;
 const staffNames=()=>S.staff.filter(x=>x.active!==false).map(x=>x.name);
+// Vraie panne de réseau ? (sinon, c'est un refus ou une erreur de la base de données)
+const isNetFail=e=>navigator.onLine===false||/failed to fetch|networkerror|network request|load failed|timeout|timed out/i.test(String(e&&e.message||e||''));
+// Message honnête : « pas de connexion » seulement si c'est vraiment le réseau ; sinon on montre la cause.
+const whyFail=e=>isNetFail(e)?'Pas de connexion. Réessaie quand le réseau revient.':'Page de facture indisponible : '+String((e&&e.message)||e||'erreur inconnue').slice(0,140);
+let rpcBroken=false;   // la réservation « claim_slot » de Supabase ne répond pas : on utilise la méthode de secours
 async function claimSlot(f,p,saleId,o){
   o=o||'';
-  if(!DB)return !S.sales.some(s=>s.fnum===f&&s.page===p&&ow(s)===o);
+  if(!DB)return !S.sales.some(s=>s.fnum===f&&s.page===p&&ow(s)===o&&!freedSales().has(s.id));
   const d=DB.doc('slots/'+sh(o)+'F'+f+'P'+p);
-  const r=await d.acquire({holder:ME.id||('t'+Math.random().toString(36).slice(2)),ttlMs:5000});
-  if(!r.acquired)return false;
-  const g=await d.get();if(g.exists&&g.data().saleId)return false;
+  // Réservation encore valable ? Non si elle appartient à une vente annulée dont la page a été libérée.
+  const taken=g=>g.exists&&g.data().saleId&&g.data().saleId!==saleId&&!freedSales().has(g.data().saleId);
+  let verify=rpcBroken;
+  if(!rpcBroken){
+    let r;
+    try{r=await d.acquire({holder:ME.id||('t'+Math.random().toString(36).slice(2)),ttlMs:5000})}
+    catch(e){if(isNetFail(e))throw e;rpcBroken=true;verify=true;r={acquired:true}}
+    if(!r.acquired){
+      // Verrou refusé : si la page est réellement prise, on passe à la suivante ; sinon on la tente avec vérification.
+      if(taken(await d.get()))return false;
+      verify=true;
+    }
+  }
+  if(taken(await d.get()))return false;
   await d.set({saleId,fnum:f,page:p,owner:o,by:ME.id||'',at:Date.now()});
+  if(verify){const v=await d.get();if(!v.exists||v.data().saleId!==saleId)return false}
   return true;
 }
 // Donne la prochaine page libre de la facture choisie (de cet agent) ; si elle est pleine, ouvre la suivante (même chef).
 async function takePage(pref,chiefIfNew,saleId,telIfNew,o){
-  o=o||'';let f=pref;
+  o=o||'';let f=pref,opened=0;
   for(let guard=0;guard<80;guard++){
     if(f==null||!books(o).some(b=>b.num===f&&b.open)){
+      if(++opened>3)throw new Error('Aucune page disponible');
       f=nextFnum(o);await put('invoices',bkey(o,f),{num:f,owner:o,chief:chiefIfNew,chiefTel:telIfNew||'',created:today()});
     }
     const u=usedPages(f,o);
@@ -684,7 +703,7 @@ const num=(el,id)=>Math.max(0,Math.round(Number(String(val(el,id)).replace(/\s/g
 function openClientForm(id){
   const c=id?byId(S.clients,id):null;
   sheet(c?'Modifier le client':'Nouveau client',`
-    <label for="cn">Nom complet *</label><input id="cn" value="${esc(c&&c.name)}" autocomplete="off">
+    <label for="cn">Nom complet *</label><div style="display:flex;gap:8px"><input id="cn" value="${esc(c&&c.name)}" autocomplete="off" autocapitalize="words" style="flex:1;min-width:0">${speechAPI()?'<button type="button" class="btn sec2 sm" id="cmic" aria-label="Dire le nom" style="flex:none">🎤 Dire</button>':''}</div>
     <label for="cp">Téléphone</label><input id="cp" type="tel" inputmode="tel" value="${esc(c&&c.phone)}">
     <label for="cv">Ville ou commune</label><input id="cv" list="villes" value="${esc(c&&c.city)}" placeholder="Ex. Dakar, Thiès, Touba"><datalist id="villes"><option>Dakar</option><option>Pikine</option><option>Guédiawaye</option><option>Rufisque</option><option>Thiès</option><option>Mbour</option><option>Touba</option><option>Diourbel</option><option>Kaolack</option><option>Saint-Louis</option><option>Ziguinchor</option><option>Louga</option><option>Tambacounda</option><option>Kolda</option></datalist>
     <label for="ca">Quartier et adresse</label><input id="ca" value="${esc(c&&c.address)}" placeholder="Ex. Parcelles Assainies, Unité 15, villa 120">
@@ -694,6 +713,7 @@ function openClientForm(id){
     <label for="cj">Profession</label><input id="cj" value="${esc(c&&c.job)}">
     <label for="ci">Pièce d'identité (facultatif)</label><input id="ci" value="${esc(c&&c.idno)}">
     <p class="note" id="dup"></p><div style="height:14px"></div><button class="btn" id="ok">Enregistrer</button>`,(el,o)=>{
+    const cm=$('#cmic',el);if(cm)cm.onclick=()=>listenName(cm,t=>{$('#cn',el).value=t;$('#dup',el).textContent=''},m=>{$('#dup',el).textContent=m});
     $('#ok',el).onclick=async()=>{
       const name=val(el,'cn').trim();if(!name){$('#dup',el).textContent='Le nom est obligatoire.';return}
       const phone=val(el,'cp').trim();const geo=val(el,'cl').trim();
@@ -965,7 +985,7 @@ function openNewSale(clientId){
       const lines=L.map(l=>{const p=byId(S.products,l.pid);return{productId:p.id,name:p.name,qty:l.qty,price:unit(l),listPrice:catalog(p)}});
       let slot;
       try{const pb=sb.value==='new'?{n:null,o:ME.id||''}:bk_(sb.value),prefB=pb.n;const inherit=sb.value==='new'?(sch.value||seller):((bookOf(prefB,pb.o)||{}).chief||seller);if(prefB!=null&&!chiefTelOf(prefB,pb.o)){const bk=bookOf(prefB,pb.o)||{num:prefB,owner:pb.o,created:today()};await put('invoices',bkey(pb.o,prefB),{...bk,chiefTel:telV})}slot=await takePage(prefB,inherit,sid,telV,pb.o)}
-      catch(e){err.textContent='Impossible d\'attribuer une page de facture. Réessayez.';$('#ok',el).disabled=false;return}
+      catch(e){console.warn('takePage',e);err.textContent='Impossible d\'attribuer une page de facture. '+whyFail(e);$('#ok',el).disabled=false;return}
       await put('sales',sid,{number:num_,date,clientId:w.clientId,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller,lines,total:t,type:w.type,deposit:dep,months:sorted.length,schedule:sorted,created:new Date().toISOString()});
       const method=val(el,'mm'),ref=val(el,'mr').trim();
       const amt=w.type==='credit'?dep:t;
@@ -1312,6 +1332,8 @@ const isSimple=()=>lsg(SIMPLE_KEY)==='1';
 .gd-done .chk svg{width:64px;height:64px;stroke:#fff;fill:none;stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round}
 .gd-done .ref{font:800 64px/1 var(--f-body);color:var(--accent);margin:8px 0}
 .gd-err{color:var(--bad);text-align:center;font-weight:600;min-height:20px}
+.gd-mic{height:76px;border-radius:20px;border:2px solid var(--accent);background:var(--card);color:var(--accent);display:flex;align-items:center;justify-content:center;gap:12px;font:800 22px var(--f-body);cursor:pointer;width:100%}
+.gd-mic svg{width:34px;height:34px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .vrow{border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:10px;background:var(--card)}
 .vrow p{margin:2px 0 8px;color:var(--mute);font-size:13px}.vrow .acts button{flex:1}
 .rec{background:var(--bad)!important;color:#fff!important}
@@ -1333,7 +1355,10 @@ const thumb=p=>p&&p.img?`<img class="th" src="${p.img}" alt="">`:`<div class="th
 
 /* ----- Voix en wolof (enregistrées par le dirigeant) ----- */
 const VOICES=[
+  ['seller','Qui a vendu','Choisis ton nom : touche ton nom dans la liste.'],
   ['phone','Numéro du client','Tape le numéro de téléphone du client.'],
+  ['name','Nom du client','Donne-moi le nom du client : touche le micro et dis le nom.'],
+  ['price','Prix du produit','Le prix est bon ? Touche la coche verte. Pour changer le prix, tape le nouveau prix puis la coche.'],
   ['product','Choix du produit','Touche la photo du produit.'],
   ['qty','Quantité','Combien en vend-on ? Touche + ou −, puis la coche verte.'],
   ['type','Comptant ou crédit','Le client paye tout maintenant (comptant) ou petit à petit (crédit) ?'],
@@ -1388,6 +1413,7 @@ function openVoices(){
 
 /* ----- Vente guidée ----- */
 const GI={
+  mic:'<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/>',
   back:'<path d="M15 5l-7 7 7 7"/>',spk:'<path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 8.5a5 5 0 010 7M18.5 6a8.5 8.5 0 010 12"/>',
   ok:'<path d="M5 12.5l4.5 4.5L19 7.5"/>',bs:'<path d="M20 5H9l-6 7 6 7h11z"/><path d="M12 9.5l5 5M17 9.5l-5 5"/>',
   cash:'<rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.8"/><path d="M6 9.5v.01M18 14.5v.01"/>',
@@ -1395,6 +1421,17 @@ const GI={
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
+/* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
+const speechAPI=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
+function listenName(btn,onText,onErr){
+  const SR=speechAPI();if(!SR){onErr('La voix n\'est pas disponible sur ce téléphone. Écris le nom.');return}
+  if(btn._rec){try{btn._rec.stop()}catch(e){}return}
+  const r=new SR();r.lang='fr-FR';r.interimResults=false;r.maxAlternatives=1;btn._rec=r;btn.classList.add('rec');onErr('');
+  r.onresult=e=>{const t=((e.results[0]&&e.results[0][0]&&e.results[0][0].transcript)||'').trim();if(t)onText(t.replace(/(^|[\s'-])(\p{L})/gu,(m,a,b)=>a+b.toUpperCase()))};
+  r.onerror=e=>onErr(e.error==='not-allowed'||e.error==='service-not-allowed'?'Micro refusé. Autorise-le dans les réglages du navigateur.':e.error==='no-speech'?'Rien entendu. Touche le micro et dis le nom.':e.error==='network'?'La voix demande internet. Écris le nom.':'Voix indisponible. Écris le nom.');
+  r.onend=()=>{btn._rec=null;btn.classList.remove('rec')};
+  try{r.start()}catch(e){btn._rec=null;btn.classList.remove('rec');onErr('Voix indisponible. Écris le nom.')}
+}
 function openGuided(){
   const g={step:'',phone:'',client:null,pid:'',qty:1,type:'',months:0,dep:0,method:'Espèces',seller:lsg(SELLER_KEY),buf:'',ref:'',sid:'',price:0,newPhone:''};
   const o=sheet('Vente guidée','',()=>{});
@@ -1403,7 +1440,7 @@ function openGuided(){
   const unit=()=>g.price||cat();
   const total=()=>unit()*g.qty;
   const flow=()=>['phone'].concat(g.newPhone&&!g.client?['name']:[]).concat(['product','qty','type','price']).concat(g.type==='credit'?['months','deposit']:[]).concat((g.type==='credit'?g.dep>0:g.type==='cash')?['method']:[]).concat(['recap']);
-  const voiceMap={name:'phone',price:'type',phone:'phone',product:'product',qty:'qty',type:'type',months:'months',deposit:'deposit',method:'method',recap:'recap',done:'done'};
+  const voiceMap={seller:'seller',name:'name',price:'price',phone:'phone',product:'product',qty:'qty',type:'type',months:'months',deposit:'deposit',method:'method',recap:'recap',done:'done'};
   const shell=(inner,opts={})=>{
     const fl=flow(),i=fl.indexOf(g.step),dots=i>=0?`<div class="gd-dots" aria-hidden="true">${fl.map((_,j)=>`<i class="${j<=i?'on':''}"></i>`).join('')}</div>`:'<div></div>';
     setBody(o,`<div class="gd"><div class="gd-top">${opts.noback?'<div style="width:56px"></div>':`<button type="button" id="gb" aria-label="Retour">${gsvg('back')}</button>`}${dots}<button type="button" id="gs" aria-label="Écouter la consigne">${gsvg('spk')}</button></div>${inner}</div>`);
@@ -1445,7 +1482,11 @@ function openGuided(){
         g.newPhone='';g.client=c;go('product');
       });
     }else if(st==='name'){
-      shell(`<div class="gd-sub">Nom du client</div><div class="gd-big" style="font-size:22px">${esc(phoneShow(g.newPhone))}</div><input id="gnm" placeholder="Prénom et nom" autocomplete="off" style="font-size:22px;padding:16px"><div class="gd-err" id="ge"></div><button type="button" class="gd-ok" id="go" aria-label="Valider">${gsvg('ok')}</button><button type="button" class="gd-no" id="gx">Passer, sans nom</button>`);
+      shell(`<div class="gd-sub">Nom du client</div><div class="gd-big" style="font-size:22px">${esc(phoneShow(g.newPhone))}</div>
+        ${speechAPI()?`<button type="button" class="gd-mic" id="gmic">${gsvg('mic')}<span>Dire le nom</span></button>`:''}
+        <input id="gnm" placeholder="Prénom et nom" autocomplete="off" autocapitalize="words" enterkeyhint="done" aria-label="Nom du client" style="font-size:22px;padding:16px"><div class="gd-err" id="ge"></div><button type="button" class="gd-ok" id="go" aria-label="Valider">${gsvg('ok')}</button><button type="button" class="gd-no" id="gx">Passer, sans nom</button>`);
+      const mic=$('#gmic',o.el);if(mic)mic.onclick=()=>listenName(mic,t=>{$('#gnm',o.el).value=t;$('#ge',o.el).textContent=''},m=>{$('#ge',o.el).textContent=m});
+      $('#gnm',o.el).onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#go',o.el).click()}};
       const mk=async nm=>{const id=uid('c');const name=nm||('Client '+phoneShow(g.newPhone));const d={name,phone:g.newPhone,created:today(),agent:ME.id,incomplete:!nm};await put('clients',id,d);g.client={id,...d};go('product')};
       $('#go',o.el).onclick=()=>{const nm=val(o.el,'gnm').trim();if(!nm){$('#ge',o.el).textContent='Écris le nom, ou touche « Passer ».';return}mk(nm)};
       $('#gx',o.el).onclick=()=>mk('');
@@ -1493,7 +1534,7 @@ function openGuided(){
         if(!bk){const sf=S.staff.find(x=>x.name===g.seller);tel=sf&&sf.phone||'';if(!ME.isAdmin||!okTel(tel)){ge.textContent='Aucune facture ouverte. Appelle le dirigeant.';return}}
         btn.disabled=true;
         let slot;const sid=uid('s'),num_=nextNumber('V');
-        try{slot=await takePage(bk?bk.num:null,bk?bk.chief:g.seller,sid,tel,bk?bk.owner:(ME.id||''))}catch(e){ge.textContent='Pas de connexion ou facture indisponible. Réessaie.';btn.disabled=false;return}
+        try{slot=await takePage(bk?bk.num:null,bk?bk.chief:g.seller,sid,tel,bk?bk.owner:(ME.id||''))}catch(e){console.warn('takePage',e);ge.textContent=whyFail(e);btn.disabled=false;return}
         const date=today(),u=unit(),lines=[{productId:p.id,name:p.name,qty:g.qty,price:u,listPrice:cat()}];
         if(u!==cat())await logAct('Prix modifié','F'+slot.f+'P'+slot.p+' · '+p.name+' : '+fmtN(cat())+' → '+fmtN(u));
         await put('sales',sid,{number:num_,date,clientId:g.client.id,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller:g.seller,lines,total:t,type:g.type,deposit:g.type==='credit'?g.dep:0,months:sch.length||0,schedule:sch,created:new Date().toISOString(),guided:true});
