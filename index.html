@@ -1359,7 +1359,7 @@ const VOICES=[
   ['seller','Qui a vendu','Choisis ton nom : touche ton nom dans la liste.'],
   ['phone','Numéro du client','Tape le numéro de téléphone du client.'],
   ['name','Nom du client','Donne-moi le nom du client : touche le micro et dis le nom.'],
-  ['price','Prix du produit','Le prix est bon ? Touche la coche verte. Pour changer le prix, tape le nouveau prix puis la coche.'],
+  ['price','Prix du produit','Écris le prix exact dont tu as parlé avec le client, puis touche la coche verte.'],
   ['product','Choix du produit','Touche la photo du produit.'],
   ['qty','Quantité','Combien en vend-on ? Touche + ou −, puis la coche verte.'],
   ['type','Comptant ou crédit','Le client paye tout maintenant (comptant) ou petit à petit (crédit) ?'],
@@ -1375,7 +1375,7 @@ function playVoice(k,quiet){
   const v=voiceDoc(k);if(!v||!v.url)return false;
   try{if(curAudio){curAudio.pause();curAudio=null}curAudio=new Audio(v.url);const pr=curAudio.play();if(pr&&pr.catch)pr.catch(()=>{});return true}catch(e){return false}
 }
-function openVoices(){
+function openVoices(focusKey){
   const canRec=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.MediaRecorder);
   const o=sheet('Voix en wolof','',(el,o)=>{o.refresh=draw});
   let rec=null,recKey='';
@@ -1387,6 +1387,7 @@ function openVoices(){
     o.el.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>playVoice(b.dataset.p));
     o.el.querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{const v=voiceDoc(b.dataset.d);if(v){await put('settings',v.id,{key:b.dataset.d,url:'',at:Date.now()});if(!DB){S.settings=S.settings.filter(x=>x.id!==v.id);lsPut('settings')}toast('Voix effacée');draw()}});
     o.el.querySelectorAll('[data-r]').forEach(b=>b.onclick=()=>toggleRec(b.dataset.r));
+    if(focusKey){const t=o.el.querySelector('[data-r="'+focusKey+'"]');focusKey=null;if(t){const row=t.closest('.vrow');if(row){row.style.borderColor='var(--gold)';row.style.borderWidth='2px'}setTimeout(()=>{try{t.scrollIntoView({block:'center'})}catch(e){}},50)}}
   }
   async function toggleRec(k){
     const err=$('#verr',o.el);err.textContent='';
@@ -1421,7 +1422,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='22-10 · v3';
+const APP_VER='22-10 · v4';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -1450,9 +1451,11 @@ function openGuided(){
   const total=()=>unit()*g.qty;
   const flow=()=>['phone'].concat(g.newPhone&&!g.client?['name']:[]).concat(['product','qty','type','price']).concat(g.type==='credit'?['months','deposit']:[]).concat((g.type==='credit'?g.dep>0:g.type==='cash')?['method']:[]).concat(['recap']);
   const voiceMap={seller:'seller',name:'name',price:'price',phone:'phone',product:'product',qty:'qty',type:'type',months:'months',deposit:'deposit',method:'method',recap:'recap',done:'done'};
+  const voiceHint=()=>{const k=voiceMap[g.step];return ME.isAdmin&&k&&!voiceDoc(k)?'<button type="button" class="gd-no" id="gvo" style="border-color:var(--gold);color:var(--ink)">Dirigeant : enregistrer ta voix pour cette étape</button>':''};
   const shell=(inner,opts={})=>{
     const fl=flow(),i=fl.indexOf(g.step),dots=i>=0?`<div class="gd-dots" aria-hidden="true">${fl.map((_,j)=>`<i class="${j<=i?'on':''}"></i>`).join('')}</div>`:'<div></div>';
-    setBody(o,`<div class="gd"><div class="gd-top">${opts.noback?'<div style="width:56px"></div>':`<button type="button" id="gb" aria-label="Retour">${gsvg('back')}</button>`}${dots}<button type="button" id="gs" aria-label="Écouter la consigne">${gsvg('spk')}</button></div>${inner}</div>`);
+    setBody(o,`<div class="gd"><div class="gd-top">${opts.noback?'<div style="width:56px"></div>':`<button type="button" id="gb" aria-label="Retour">${gsvg('back')}</button>`}${dots}<button type="button" id="gs" aria-label="Écouter la consigne">${gsvg('spk')}</button></div>${inner}${voiceHint()}</div>`);
+    const gvo=$('#gvo',o.el);if(gvo)gvo.onclick=()=>openVoices(voiceMap[g.step]);
     const gb=$('#gb',o.el);if(gb)gb.onclick=back;
     $('#gs',o.el).onclick=()=>{if(!playVoice(voiceMap[g.step]))toast('Voix non enregistrée')};
     window.scrollTo(0,0);
@@ -1502,7 +1505,6 @@ function openGuided(){
         <div class="gd-err" id="ge"></div>
         <button type="button" class="gd-ok" id="go" aria-label="Valider">${gsvg('ok')}</button>
         <button type="button" class="gd-no" id="gx">Passer, sans nom</button>
-        ${ME.isAdmin&&!voiceDoc('name')?'<button type="button" class="gd-no" id="gvo" style="border-color:var(--gold);color:var(--ink)">Dirigeant : enregistrer ta voix pour cette étape</button>':''}
         <div class="gd-sub" style="font-size:11px;opacity:.55">Version ${APP_VER}</div>`);
       const mic=$('#gmic',o.el),inp=$('#gnm',o.el),err=m=>{$('#ge',o.el).textContent=m||''},note=t=>{$('#gnote',o.el).textContent=t},lbl=t=>{$('#gml',o.el).textContent=t};
       // Dictée automatique : si le téléphone ne sait pas l'écouter, on passe à l'enregistrement de la voix.
@@ -1528,7 +1530,6 @@ function openGuided(){
         }catch(e){err('Micro refusé. Autorise-le dans les réglages du navigateur.')}
       }
       mic.onclick=()=>{if(recMode)recName();else listenName(mic,t=>{inp.value=t;err('');note('Nom écrit. Touche la coche verte, ou corrige-le.')},m=>err(m))};
-      const gvo=$('#gvo',o.el);if(gvo)gvo.onclick=()=>openVoices();
       inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#go',o.el).click()}};
       const mk=async nm=>{
         const id=uid('c');const name=nm||('Client '+phoneShow(g.newPhone));
@@ -1541,8 +1542,8 @@ function openGuided(){
       $('#gx',o.el).onclick=()=>mk('');
     }else if(st==='price'){
       const c=cat();
-      shell(`<div class="gd-sub">Prix de 1 ${esc(prod().name)}</div><div class="gd-big" id="gv">${fmtN(c)}</div><div class="gd-sub" id="gn" style="opacity:.8">Valide pour garder ce prix, ou tape un autre prix</div>${keypad(9)}`);
-      bindKeys(9,()=>{$('#gv',o.el).textContent=fmtN(g.buf?Number(g.buf):c);$('#gn',o.el).textContent=g.buf&&Number(g.buf)!==c?'Prix changé (normal : '+fmtN(c)+')':'Valide pour garder ce prix, ou tape un autre prix'},()=>!g.buf||Number(g.buf)>0,()=>{g.price=g.buf?Number(g.buf):0;next()});
+      shell(`<div class="gd-sub">Prix de 1 ${esc(prod().name)}</div><div class="gd-big" id="gv">${fmtN(c)}</div><div class="gd-sub" id="gn" style="opacity:.8">Écris le prix exact convenu avec le client, puis la coche verte</div>${keypad(9)}`);
+      bindKeys(9,()=>{$('#gv',o.el).textContent=fmtN(g.buf?Number(g.buf):c);$('#gn',o.el).textContent=g.buf&&Number(g.buf)!==c?'Prix changé (normal : '+fmtN(c)+')':'Écris le prix exact convenu avec le client, puis la coche verte'},()=>!g.buf||Number(g.buf)>0,()=>{g.price=g.buf?Number(g.buf):0;next()});
     }else if(st==='product'){
       const L=S.products.slice().sort((a,b)=>a.name.localeCompare(b.name));
       shell(`<div class="tiles">${L.map(p=>{const q=stockOf(p.id);return `<button type="button" class="tile ${q<=0?'dim':''}" data-p="${p.id}" ${q<=0?'disabled':''}>${p.img?`<img src="${p.img}" alt="">`:`<div class="tph" aria-hidden="true">${esc(p.name.trim().charAt(0).toUpperCase())}</div>`}<b>${fmtN(p.price)}</b><small>${esc(p.name)}</small></button>`}).join('')||'<div class="empty">Aucun produit. Le dirigeant doit en ajouter.</div>'}</div>`);
