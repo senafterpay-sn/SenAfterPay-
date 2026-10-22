@@ -219,6 +219,10 @@ window.SAP_LIBS={h2c:'html2canvas.min.js',pdf:'jspdf.umd.min.js'};
         catch(e){if(isNetErr(e)){queue=queue.filter(q=>!(q.c===c&&q.id===id));queue.push({c,id,data:obj});saveQ();banner(queue.length+' opération(s) en attente de connexion')}
           else{cache[c].delete(id);saveC(c);emit(c);throw e}}
       },
+      async delete(){
+        if(cache[c]){cache[c].delete(id);saveC(c);emit(c)}
+        const{error}=await sb.from('docs').delete().eq('col',c).eq('id',id);if(error)throw error;
+      },
       async get(){const{data}=await sb.from('docs').select('data').eq('col',c).eq('id',id).maybeSingle();return{exists:!!data,data:()=>data?data.data:undefined}},
       async acquire({holder}){const{data,error}=await sb.rpc('claim_slot',{p_id:id,p_holder:String(holder)});if(error)throw error;return{acquired:data===true}}
     };
@@ -397,7 +401,8 @@ function reminderText(e){
    avant d'enregistrer la vente : deux appareils ne peuvent pas obtenir la même page. */
 const PAGES=50;
 const bookOf=n=>S.invoices.find(b=>b.num===n);
-function usedPages(n){const u=new Set();S.sales.forEach(s=>{if(s.fnum===n)u.add(s.page)});S.slots.forEach(x=>{if(x.fnum===n&&x.saleId)u.add(x.page)});return u}
+const freedSales=()=>new Set(S.cancels.filter(c=>c.saleId&&c.free).map(c=>c.saleId));
+function usedPages(n){const u=new Set(),fr=freedSales();S.sales.forEach(s=>{if(s.fnum===n&&!fr.has(s.id))u.add(s.page)});S.slots.forEach(x=>{if(x.fnum===n&&x.saleId&&!fr.has(x.saleId))u.add(x.page)});return u}
 function books(){
   const nums=new Set([...S.invoices.map(b=>b.num),...S.sales.filter(s=>s.fnum).map(s=>s.fnum)]);
   return[...nums].sort((a,b)=>a-b).map(n=>{const u=usedPages(n).size;return{num:n,chief:(bookOf(n)||{}).chief||'',used:u,open:u<PAGES}});
@@ -408,36 +413,20 @@ const chiefOf=s=>(s.fnum&&(bookOf(s.fnum)||{}).chief)||'—';
 const chiefTelOf=n=>{const b=bookOf(n)||{};const st=S.staff.find(x=>x.name===b.chief);return b.chiefTel||(st&&st.phone)||''};
 const okTel=t=>String(t||'').replace(/\D/g,'').length>=9;
 const staffNames=()=>S.staff.filter(x=>x.active!==false).map(x=>x.name);
-// Vraie panne de réseau ? (sinon, c'est un refus ou une erreur de la base de données)
-const isNetFail=e=>navigator.onLine===false||/failed to fetch|networkerror|network request|load failed|timeout|timed out/i.test(String(e&&e.message||e||''));
-// Message honnête : « pas de connexion » seulement si c'est vraiment le réseau ; sinon on montre la cause.
-const whyFail=e=>isNetFail(e)?'Pas de connexion. Réessaie quand le réseau revient.':'Page de facture indisponible : '+String((e&&e.message)||e||'erreur inconnue').slice(0,140);
-let rpcBroken=false;   // la réservation « claim_slot » de Supabase ne répond pas : on utilise la méthode de secours
 async function claimSlot(f,p,saleId){
   if(!DB)return !S.sales.some(s=>s.fnum===f&&s.page===p);
   const d=DB.doc('slots/F'+f+'P'+p);
-  let verify=rpcBroken;
-  if(!rpcBroken){
-    let r;
-    try{r=await d.acquire({holder:ME.id||('t'+Math.random().toString(36).slice(2)),ttlMs:5000})}
-    catch(e){if(isNetFail(e))throw e;rpcBroken=true;verify=true;r={acquired:true}}
-    if(!r.acquired){
-      // Verrou refusé : si la page est réellement prise, on passe à la suivante ; sinon on la tente avec vérification.
-      const g0=await d.get();if(g0.exists&&g0.data().saleId)return false;
-      verify=true;
-    }
-  }
-  const g=await d.get();if(g.exists&&g.data().saleId&&g.data().saleId!==saleId)return false;
+  const r=await d.acquire({holder:ME.id||('t'+Math.random().toString(36).slice(2)),ttlMs:5000});
+  if(!r.acquired)return false;
+  const g=await d.get();if(g.exists&&g.data().saleId)return false;
   await d.set({saleId,fnum:f,page:p,by:ME.id||'',at:Date.now()});
-  if(verify){const v=await d.get();if(!v.exists||v.data().saleId!==saleId)return false}
   return true;
 }
 // Donne la prochaine page libre de la facture choisie ; si elle est pleine, ouvre la facture suivante (même chef).
 async function takePage(pref,chiefIfNew,saleId,telIfNew){
-  let f=pref,opened=0;
+  let f=pref;
   for(let guard=0;guard<80;guard++){
     if(f==null||!books().some(b=>b.num===f&&b.open)){
-      if(++opened>3)throw new Error('Aucune page disponible');
       f=nextFnum();await put('invoices','f'+f,{num:f,chief:chiefIfNew,chiefTel:telIfNew||'',created:today()});
     }
     const u=usedPages(f);
@@ -537,7 +526,7 @@ function vHome(v){
   ${top.length?`<div class="sec"><h2>Produits les plus vendus</h2><span>${per}</span></div><div class="card scroll"><table class="tbl"><tbody>${top.map(([k,x])=>`<tr><td>${esc(k)}</td><td class="n">${x.q} u.</td><td class="n">${money(x.t)}</td></tr>`).join('')}</tbody></table></div>`:''}
   ${low.length?`<div class="sec"><h2>Stock bas</h2><span>${low.length}</span></div><div class="list">${low.map(p=>`<div class="row" data-prod="${p.id}"><div class="l"><b>${esc(p.name)}</b><small>Seuil ${p.alert||0}</small></div><div class="r"><span class="pill bad">${stockOf(p.id)} en stock</span></div></div>`).join('')}</div>`:''}
   ${mode==='local'?'<p class="note">Mode téléphone : les données sont enregistrées dans cet appareil uniquement. Ouvrez le lien depuis votre compte Claude pour partager avec vos agents.</p>':''}
-  <button class="btn fab" data-act="newsale">+ Nouvelle vente</button>`;
+  <button class="btn fab fab2" data-act="guided">Mode simple</button><button class="btn fab" data-act="newsale">+ Nouvelle vente</button>`;
   v.querySelectorAll('#pk button').forEach(b=>b.onclick=()=>{PER.k=b.dataset.k;if(PER.k==='custom'&&!PER.from){const r=rangeOf('month');PER.from=r.from;PER.to=r.to}render()});
   const pf=$('#pf',v),pt=$('#pt2',v);
   if(pf){pf.onchange=()=>{PER.from=pf.value||PER.from;render()};pt.onchange=()=>{PER.to=pt.value||PER.to;render()}}
@@ -570,7 +559,7 @@ function vSales(v){
   <input class="search" id="q" type="search" placeholder="Client, vendeur ou facture (ex. F5P8)" value="${esc(query)}">
   <button class="btn sec2" data-act="guided" style="margin:10px 0 4px">Vente guidée (photos et voix)</button>
   <div class="list">${A.length?A.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>${esc(x.c?x.c.name:'Client')}</b><small>${esc(ref(x.s))} · ${fdate(x.s.date)} · ${trLabel(x.s)}</small><small>Vendeur : ${esc(sellerOf(x.s))}</small></div><div class="r"><b>${money(x.s.total)}</b><span class="pill ${x.cancelled?'bad':stPill(x.st.status)}">${x.cancelled?'Annulée':x.st.status==='soldée'?'Soldée':x.st.status==='en retard'?'Retard':'Reste '+money(x.st.balance)}</span></div></div>`).join(''):'<div class="empty">Aucune vente pour le moment. Touchez « Nouvelle vente » pour enregistrer la première.</div>'}</div>
-  <button class="btn fab" data-act="newsale">+ Nouvelle vente</button>`;
+  <button class="btn fab fab2" data-act="guided">Mode simple</button><button class="btn fab" data-act="newsale">+ Nouvelle vente</button>`;
   bindSearch(v);bindRows(v);
 }
 let dueF='all';
@@ -678,7 +667,7 @@ const num=(el,id)=>Math.max(0,Math.round(Number(String(val(el,id)).replace(/\s/g
 function openClientForm(id){
   const c=id?byId(S.clients,id):null;
   sheet(c?'Modifier le client':'Nouveau client',`
-    <label for="cn">Nom complet *</label><div style="display:flex;gap:8px"><input id="cn" value="${esc(c&&c.name)}" autocomplete="off" autocapitalize="words" style="flex:1;min-width:0">${speechAPI()?'<button type="button" class="btn sec2 sm" id="cmic" aria-label="Dire le nom" style="flex:none">🎤 Dire</button>':''}</div>
+    <label for="cn">Nom complet *</label><input id="cn" value="${esc(c&&c.name)}" autocomplete="off">
     <label for="cp">Téléphone</label><input id="cp" type="tel" inputmode="tel" value="${esc(c&&c.phone)}">
     <label for="cv">Ville ou commune</label><input id="cv" list="villes" value="${esc(c&&c.city)}" placeholder="Ex. Dakar, Thiès, Touba"><datalist id="villes"><option>Dakar</option><option>Pikine</option><option>Guédiawaye</option><option>Rufisque</option><option>Thiès</option><option>Mbour</option><option>Touba</option><option>Diourbel</option><option>Kaolack</option><option>Saint-Louis</option><option>Ziguinchor</option><option>Louga</option><option>Tambacounda</option><option>Kolda</option></datalist>
     <label for="ca">Quartier et adresse</label><input id="ca" value="${esc(c&&c.address)}" placeholder="Ex. Parcelles Assainies, Unité 15, villa 120">
@@ -688,7 +677,6 @@ function openClientForm(id){
     <label for="cj">Profession</label><input id="cj" value="${esc(c&&c.job)}">
     <label for="ci">Pièce d'identité (facultatif)</label><input id="ci" value="${esc(c&&c.idno)}">
     <p class="note" id="dup"></p><div style="height:14px"></div><button class="btn" id="ok">Enregistrer</button>`,(el,o)=>{
-    const cm=$('#cmic',el);if(cm)cm.onclick=()=>listenName(cm,t=>{$('#cn',el).value=t;$('#dup',el).textContent=''},m=>{$('#dup',el).textContent=m});
     $('#ok',el).onclick=async()=>{
       const name=val(el,'cn').trim();if(!name){$('#dup',el).textContent='Le nom est obligatoire.';return}
       const phone=val(el,'cp').trim();const geo=val(el,'cl').trim();
@@ -696,7 +684,7 @@ function openClientForm(id){
       const dup=S.clients.find(x=>x.id!==(c&&c.id)&&phone&&x.phone===phone);
       if(dup&&!el.dataset.sure){$('#dup',el).textContent='Attention : '+dup.name+' a déjà ce numéro. Touchez encore « Enregistrer » pour créer quand même.';el.dataset.sure=1;return}
       const nid=c?c.id:uid('c');
-      await put('clients',nid,{...(c||{}),name,phone,city:val(el,'cv').trim(),address:val(el,'ca').trim(),landmark:val(el,'cm').trim(),geo,job:val(el,'cj').trim(),idno:val(el,'ci').trim(),created:c?c.created:today(),agent:c?c.agent:ME.id,incomplete:false});
+      await put('clients',nid,{...(c||{}),name,phone,city:val(el,'cv').trim(),address:val(el,'ca').trim(),landmark:val(el,'cm').trim(),geo,job:val(el,'cj').trim(),idno:val(el,'ci').trim(),created:c?c.created:today(),agent:c?c.agent:ME.id});
       toast('Client enregistré');o.close();if(!c&&o.after)o.after(nid);
     };
   });
@@ -808,7 +796,7 @@ function openBook(n){
   function draw(){
     const b=books().find(x=>x.num===n);if(!b){o.close();return}
     const P=pays(),now=today();
-    const rows=S.sales.filter(s=>s.fnum===n).sort((a,b)=>a.page-b.page).map(s=>({s,c:byId(S.clients,s.clientId),st:saleState(s,P,now)}));
+    const rows=S.sales.filter(s=>s.fnum===n&&!isCancelled(s)).sort((a,b)=>a.page-b.page).map(s=>({s,c:byId(S.clients,s.clientId),st:saleState(s,P,now)}));
     const used=usedPages(n);const free=[];for(let p=1;p<=PAGES;p++)if(!used.has(p))free.push(p);
     const ranges=[];free.forEach(p=>{const l=ranges[ranges.length-1];if(l&&l[1]===p-1)l[1]=p;else ranges.push([p,p])});
     const names=staffNames();if(b.chief&&!names.includes(b.chief))names.push(b.chief);
@@ -954,7 +942,7 @@ function openNewSale(clientId){
       const lines=L.map(l=>{const p=byId(S.products,l.pid);return{productId:p.id,name:p.name,qty:l.qty,price:unit(l),listPrice:catalog(p)}});
       let slot;
       try{const prefB=sb.value==='new'?null:Number(sb.value);const inherit=sb.value==='new'?(sch.value||seller):((bookOf(prefB)||{}).chief||seller);if(prefB!=null&&!chiefTelOf(prefB)){const bk=bookOf(prefB)||{num:prefB,created:today()};await put('invoices','f'+prefB,{...bk,chiefTel:telV})}slot=await takePage(prefB,inherit,sid,telV)}
-      catch(e){console.warn('takePage',e);err.textContent='Impossible d\'attribuer une page de facture. '+whyFail(e);$('#ok',el).disabled=false;return}
+      catch(e){err.textContent='Impossible d\'attribuer une page de facture. Réessayez.';$('#ok',el).disabled=false;return}
       await put('sales',sid,{number:num_,date,clientId:w.clientId,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,seller,lines,total:t,type:w.type,deposit:dep,months:sorted.length,schedule:sorted,created:new Date().toISOString()});
       const method=val(el,'mm'),ref=val(el,'mr').trim();
       const amt=w.type==='credit'?dep:t;
@@ -1087,16 +1075,18 @@ function openCancelSale(sid){
   const s=byId(S.sales,sid);if(!s)return;
   const P=pays().filter(p=>p.saleId===sid&&p.status!=='annulé'),paid=P.reduce((a,p)=>a+p.amount,0);
   sheet('Annuler la vente '+ref(s),`<div class="card"><p class="note" style="margin-top:0">L'annulation est définitive et notée dans le journal.</p>
-    <ul style="margin:0 0 8px;padding-left:20px"><li>Le stock des produits est remis.</li><li>${P.length?P.length+' paiement(s) reçu(s) ('+money(paid)+') sont annulés : pensez à rembourser le client.':'Aucun paiement reçu.'}</li><li>La page ${esc(ref(s))} reste utilisée dans le carnet.</li></ul>
-    <label for="cr" style="margin-top:12px">Motif obligatoire</label><input id="cr" placeholder="Ex. le client renonce, erreur de saisie">
+    <ul style="margin:0 0 8px;padding-left:20px"><li>Le stock des produits est remis.</li><li>${P.length?P.length+' paiement(s) reçu(s) ('+money(paid)+') sont annulés : pensez à rembourser le client.':'Aucun paiement reçu.'}</li></ul>
+    <label for="pg" style="margin-top:12px">Que devient la page ${esc(ref(s))} ?</label><select id="pg"><option value="free">La libérer : une autre vente pourra la reprendre</option><option value="keep">La laisser vide : elle reste occupée</option></select><label for="cr" style="margin-top:12px">Motif obligatoire</label><input id="cr" placeholder="Ex. le client renonce, erreur de saisie">
     <p class="note" id="cerr" style="color:var(--bad)"></p><button class="btn danger" id="cx">Confirmer l'annulation</button></div>`,(el,o)=>{
     $('#cx',el).onclick=async()=>{
       const r=val(el,'cr').trim();if(r.length<3){$('#cerr',el).textContent='Indiquez le motif.';return}
       $('#cx',el).disabled=true;
-      await put('cancels','cs_'+sid,{saleId:sid,reason:r,by:ME.id,date:today()});
+      const free=val(el,'pg')==='free';
+      await put('cancels','cs_'+sid,{saleId:sid,reason:r,by:ME.id,date:today(),free});
+      if(free&&s.fnum&&s.page){try{await DB.doc('slots/F'+s.fnum+'P'+s.page).delete()}catch(e){}}
       for(const p of P)await put('cancels',uid('x'),{paymentId:p.id,reason:'Annulation de la vente '+ref(s)+' : '+r,by:ME.id,date:today()});
       for(const l of s.lines)await put('moves',uid('m'),{productId:l.productId,qty:l.qty,type:'annulation',date:today(),note:ref(s),agent:ME.id});
-      await logAct('Vente annulée',ref(s)+' · '+money(s.total)+' · motif : '+r);
+      await logAct('Vente annulée',ref(s)+' · '+money(s.total)+(free?' · page libérée':' · page laissée vide')+' · motif : '+r);
       toast('Vente annulée');o.close();
     };
   });
@@ -1258,6 +1248,7 @@ const lsg=k=>{try{return localStorage.getItem(k)||''}catch(e){return''}};
 const lss=(k,v)=>{try{v?localStorage.setItem(k,v):localStorage.removeItem(k)}catch(e){}};
 const isSimple=()=>lsg(SIMPLE_KEY)==='1';
 (function(){const s=document.createElement('style');s.textContent=`
+.fab2{right:calc(max(16px,env(safe-area-inset-right,0px)) + 190px);background:var(--card,#fff);color:var(--ink,#14307f);border:2px solid var(--gold)}
 .th{width:44px;height:44px;border-radius:10px;object-fit:cover;flex:none;margin-right:12px;background:var(--accent-soft)}
 .th.ph{display:grid;place-items:center;color:var(--accent);font:800 18px var(--f-body)}
 .pimg{width:100%;max-height:200px;object-fit:cover;border-radius:12px;display:block;margin-bottom:10px}
@@ -1295,9 +1286,6 @@ const isSimple=()=>lsg(SIMPLE_KEY)==='1';
 .gd-done .chk svg{width:64px;height:64px;stroke:#fff;fill:none;stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round}
 .gd-done .ref{font:800 64px/1 var(--f-body);color:var(--accent);margin:8px 0}
 .gd-err{color:var(--bad);text-align:center;font-weight:600;min-height:20px}
-.gd-in{width:100%;height:68px;border-radius:16px;border:2px solid var(--line);background:var(--card);color:var(--ink);font:700 26px var(--f-body);text-align:center;padding:0 12px}
-.gd-mic{height:76px;border-radius:20px;border:2px solid var(--accent);background:var(--card);color:var(--accent);display:flex;align-items:center;justify-content:center;gap:12px;font:800 22px var(--f-body);cursor:pointer;width:100%}
-.gd-mic svg{width:34px;height:34px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .vrow{border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:10px;background:var(--card)}
 .vrow p{margin:2px 0 8px;color:var(--mute);font-size:13px}.vrow .acts button{flex:1}
 .rec{background:var(--bad)!important;color:#fff!important}
@@ -1320,7 +1308,6 @@ const thumb=p=>p&&p.img?`<img class="th" src="${p.img}" alt="">`:`<div class="th
 /* ----- Voix en wolof (enregistrées par le dirigeant) ----- */
 const VOICES=[
   ['phone','Numéro du client','Tape le numéro de téléphone du client.'],
-  ['name','Nom du client','Écris le nom du client, ou touche le micro et dis-le. Puis touche la coche verte.'],
   ['product','Choix du produit','Touche la photo du produit.'],
   ['qty','Quantité','Combien en vend-on ? Touche + ou −, puis la coche verte.'],
   ['type','Comptant ou crédit','Le client paye tout maintenant (comptant) ou petit à petit (crédit) ?'],
@@ -1375,7 +1362,6 @@ function openVoices(){
 
 /* ----- Vente guidée ----- */
 const GI={
-  mic:'<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/>',
   back:'<path d="M15 5l-7 7 7 7"/>',spk:'<path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 8.5a5 5 0 010 7M18.5 6a8.5 8.5 0 010 12"/>',
   ok:'<path d="M5 12.5l4.5 4.5L19 7.5"/>',bs:'<path d="M20 5H9l-6 7 6 7h11z"/><path d="M12 9.5l5 5M17 9.5l-5 5"/>',
   cash:'<rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.8"/><path d="M6 9.5v.01M18 14.5v.01"/>',
@@ -1383,25 +1369,14 @@ const GI={
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
-/* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
-const speechAPI=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
-function listenName(btn,onText,onErr){
-  const SR=speechAPI();if(!SR){onErr('La voix n\'est pas disponible sur ce téléphone. Écris le nom.');return}
-  if(btn._rec){try{btn._rec.stop()}catch(e){}return}
-  const r=new SR();r.lang='fr-FR';r.interimResults=false;r.maxAlternatives=1;btn._rec=r;btn.classList.add('rec');onErr('');
-  r.onresult=e=>{const t=((e.results[0]&&e.results[0][0]&&e.results[0][0].transcript)||'').trim();if(t)onText(t.replace(/(^|[\s'-])(\p{L})/gu,(m,a,b)=>a+b.toUpperCase()))};
-  r.onerror=e=>onErr(e.error==='not-allowed'||e.error==='service-not-allowed'?'Micro refusé. Autorise-le dans les réglages du navigateur.':e.error==='no-speech'?'Rien entendu. Touche le micro et dis le nom.':e.error==='network'?'La voix demande internet. Écris le nom.':'Voix indisponible. Écris le nom.');
-  r.onend=()=>{btn._rec=null;btn.classList.remove('rec')};
-  try{r.start()}catch(e){btn._rec=null;btn.classList.remove('rec');onErr('Voix indisponible. Écris le nom.')}
-}
 function openGuided(){
   const g={step:'',phone:'',client:null,pid:'',qty:1,type:'',months:0,dep:0,method:'Espèces',seller:lsg(SELLER_KEY),buf:'',ref:'',sid:''};
   const o=sheet('Vente guidée','',()=>{});
   const prod=()=>byId(S.products,g.pid);
   const unit=()=>{const p=prod();return p?(g.type==='credit'?(p.creditPrice||p.price):p.price):0};
   const total=()=>unit()*g.qty;
-  const flow=()=>['phone'].concat(g.needName?['name']:[]).concat(['product','qty','type']).concat(g.type==='credit'?['months','deposit']:[]).concat((g.type==='credit'?g.dep>0:g.type==='cash')?['method']:[]).concat(['recap']);
-  const voiceMap={phone:'phone',name:'name',product:'product',qty:'qty',type:'type',months:'months',deposit:'deposit',method:'method',recap:'recap',done:'done'};
+  const flow=()=>['phone','product','qty','type'].concat(g.type==='credit'?['months','deposit']:[]).concat((g.type==='credit'?g.dep>0:g.type==='cash')?['method']:[]).concat(['recap']);
+  const voiceMap={phone:'phone',product:'product',qty:'qty',type:'type',months:'months',deposit:'deposit',method:'method',recap:'recap',done:'done'};
   const shell=(inner,opts={})=>{
     const fl=flow(),i=fl.indexOf(g.step),dots=i>=0?`<div class="gd-dots" aria-hidden="true">${fl.map((_,j)=>`<i class="${j<=i?'on':''}"></i>`).join('')}</div>`:'<div></div>';
     setBody(o,`<div class="gd"><div class="gd-top">${opts.noback?'<div style="width:56px"></div>':`<button type="button" id="gb" aria-label="Retour">${gsvg('back')}</button>`}${dots}<button type="button" id="gs" aria-label="Écouter la consigne">${gsvg('spk')}</button></div>${inner}</div>`);
@@ -1438,33 +1413,10 @@ function openGuided(){
       const digits=()=>g.buf;const found=()=>g.buf.length===9&&S.clients.find(c=>String(c.phone||'').replace(/\D/g,'').slice(-9)===g.buf);
       shell(`<div class="gd-big" id="gv"></div><div class="gd-sub" id="gn"></div>${keypad(9)}`);
       bindKeys(9,()=>{$('#gv',o.el).textContent=g.buf?g.buf.replace(/(\d{2})(\d{0,3})(\d{0,2})(\d{0,2})/,(m,a,b,c,d)=>[a,b,c,d].filter(Boolean).join(' ')):'';const f=found();$('#gn',o.el).textContent=g.buf.length===9?(f?f.name:'Nouveau client'):''},()=>g.buf.length===9,async()=>{
-        const c=found();
-        g.phone=g.buf;g.client=c||null;
-        // Client connu et déjà nommé : on continue. Nouveau client (ou sans nom) : on demande son nom.
-        g.needName=!c||!!c.incomplete;
-        go(g.needName?'name':'product');
+        let c=found();
+        if(!c){const id=uid('c');c={id,name:'Client '+phoneShow(g.buf),phone:g.buf,created:today(),agent:ME.id,incomplete:true};await put('clients',id,{name:c.name,phone:c.phone,created:c.created,agent:c.agent,incomplete:true})}
+        g.client=c;g.phone=g.buf;go('product');
       });
-    }else if(st==='name'){
-      const hasSR=!!speechAPI(),cur=g.client&&!g.client.incomplete?g.client.name:'';
-      shell(`<div class="gd-sub">Nom du client · ${esc(phoneShow(g.phone))}</div>
-        <input id="gnm" class="gd-in" autocomplete="off" autocapitalize="words" enterkeyhint="done" placeholder="Écris le nom" value="${esc(cur)}" aria-label="Nom du client">
-        ${hasSR?`<button type="button" class="gd-mic" id="gmic">${gsvg('mic')}<span>Dire le nom</span></button>`:''}
-        <div class="gd-err" id="ge"></div>
-        <button type="button" class="gd-ok" id="go" aria-label="Valider le nom">${gsvg('ok')}</button>
-        <button type="button" class="gd-no" id="gskip">Passer, sans nom</button>`);
-      const inp=$('#gnm',o.el),ge=$('#ge',o.el),mic=$('#gmic',o.el);
-      if(mic)mic.onclick=()=>listenName(mic,t=>{inp.value=t;ge.textContent=''},m=>{ge.textContent=m});
-      const save=async(nm,incomplete)=>{
-        const btn=$('#go',o.el);btn.disabled=true;
-        try{
-          if(g.client&&g.client.id){const{id,...rest}=g.client;g.client={id,...rest,name:nm,incomplete};await put('clients',id,{...rest,name:nm,incomplete})}
-          else{const id=uid('c'),d={name:nm,phone:g.phone,created:today(),agent:ME.id,incomplete};await put('clients',id,d);g.client={id,...d}}
-          g.needName=!!incomplete;go('product');
-        }catch(e){console.warn('client',e);ge.textContent='Client non enregistré : '+String((e&&e.message)||e).slice(0,100);btn.disabled=false}
-      };
-      $('#go',o.el).onclick=()=>{const nm=inp.value.trim();if(nm.length<2){ge.textContent='Écris ou dis le nom du client.';return}save(nm,false)};
-      $('#gskip',o.el).onclick=()=>save((g.client&&g.client.name)||('Client '+phoneShow(g.phone)),true);
-      inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#go',o.el).click()}};
     }else if(st==='product'){
       const L=S.products.slice().sort((a,b)=>a.name.localeCompare(b.name));
       shell(`<div class="tiles">${L.map(p=>{const q=stockOf(p.id);return `<button type="button" class="tile ${q<=0?'dim':''}" data-p="${p.id}" ${q<=0?'disabled':''}>${p.img?`<img src="${p.img}" alt="">`:`<div class="tph" aria-hidden="true">${esc(p.name.trim().charAt(0).toUpperCase())}</div>`}<b>${fmtN(p.price)}</b><small>${esc(p.name)}</small></button>`}).join('')||'<div class="empty">Aucun produit. Le dirigeant doit en ajouter.</div>'}</div>`);
@@ -1505,7 +1457,7 @@ function openGuided(){
         if(!bk){const sf=S.staff.find(x=>x.name===g.seller);tel=sf&&sf.phone||'';if(!ME.isAdmin||!okTel(tel)){ge.textContent='Aucune facture ouverte. Appelle le dirigeant.';return}}
         btn.disabled=true;
         let slot;const sid=uid('s'),num_=nextNumber('V');
-        try{slot=await takePage(bk?bk.num:null,bk?bk.chief:g.seller,sid,tel)}catch(e){console.warn('takePage',e);ge.textContent=whyFail(e);btn.disabled=false;return}
+        try{slot=await takePage(bk?bk.num:null,bk?bk.chief:g.seller,sid,tel)}catch(e){ge.textContent='Pas de connexion ou facture indisponible. Réessaie.';btn.disabled=false;return}
         const date=today(),u=unit(),lines=[{productId:p.id,name:p.name,qty:g.qty,price:u,listPrice:u}];
         await put('sales',sid,{number:num_,date,clientId:g.client.id,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,seller:g.seller,lines,total:t,type:g.type,deposit:g.type==='credit'?g.dep:0,months:sch.length||0,schedule:sch,created:new Date().toISOString(),guided:true});
         if(payNow>0)await put('payments',uid('y'),{number:nextNumber('R'),saleId:sid,clientId:g.client.id,amount:payNow,kind:g.type==='credit'?'acompte':'comptant',method:g.method,ref:'',collector:ME.isAdmin?DIRECT:g.seller,date,time:new Date().toISOString(),agent:ME.id,byAdmin:ME.isAdmin});
