@@ -214,10 +214,10 @@ window.SAP_LIBS={h2c:'html2canvas.min.js',pdf:'jspdf.umd.min.js'};
   function docRef(c,id){
     return{
       async set(obj){
-        if(c!=='tracks'){cache[c]=cache[c]||new Map();cache[c].set(id,obj);saveC(c);emit(c)}
+        cache[c]=cache[c]||new Map();cache[c].set(id,obj);saveC(c);emit(c);
         try{const{error}=await sb.from('docs').upsert({col:c,id,data:obj,updated_at:new Date().toISOString()});if(error)throw error}
         catch(e){if(isNetErr(e)){queue=queue.filter(q=>!(q.c===c&&q.id===id));queue.push({c,id,data:obj});saveQ();banner(queue.length+' opération(s) en attente de connexion')}
-          else{if(cache[c]){cache[c].delete(id);saveC(c);emit(c)}throw e}}
+          else{cache[c].delete(id);saveC(c);emit(c);throw e}}
       },
       async delete(){
         if(cache[c]){cache[c].delete(id);saveC(c);emit(c)}
@@ -235,8 +235,7 @@ window.SAP_LIBS={h2c:'html2canvas.min.js',pdf:'jspdf.umd.min.js'};
         (async()=>{await sess();const ok=await loadCol(c);listen();emit(c);if(!ok&&errcb&&!cache[c].size){}})();
         return()=>{subs[c]=subs[c].filter(x=>x!==cb)};
       }}},
-    doc(path){const[c,id]=slash(path);return docRef(c,id)},
-    async fetchTracks(ids){if(!ids.length)return[];const{data,error}=await sb.from('docs').select('id,data').eq('col','tracks').in('data->>shiftId',ids);if(error)throw error;return(data||[]).map(r=>r.data)}
+    doc(path){const[c,id]=slash(path);return docRef(c,id)}
   };
   const USER={
     async me(){return{id:session.user.id,name:profile.name||session.user.email.split('@')[0]}},
@@ -244,7 +243,6 @@ window.SAP_LIBS={h2c:'html2canvas.min.js',pdf:'jspdf.umd.min.js'};
     async isOwner(){return profile.role==='admin'},
     async list(){const{data,error}=await sb.from('profiles').select('id,name,role,active,zone').order('name');if(error)throw error;return data||[]},
     async update(id,patch){const{error}=await sb.from('profiles').update(patch).eq('id',id);if(error)throw error},
-    async purge(days){const{data,error}=await sb.rpc('purge_tracks',{p_days:days});if(error)throw error;return data||0},
     async audit(){const{data,error}=await sb.from('audit').select('*').order('at',{ascending:false}).limit(100);if(error)throw error;return data||[]},
     async profiles(ids){
       try{const{data}=await sb.from('profiles').select('id,name').in('id',ids);const o={};(data||[]).forEach(p=>o[p.id]={name:p.name});return o}catch(e){return{}}
@@ -321,8 +319,8 @@ function saleState(sale,pays,now){
 window.__calc={buildSchedule,allocate,saleState,addMonths,addDays};
 
 /* ========= Données : base partagée (db) ou, à défaut, stockage local du téléphone ========= */
-const COLS=['clients','products','costs','sales','payments','moves','cancels','staff','invoices','slots','expenses','remittances','counts','logs','settings','reminders','shifts','visits'];
-const S={clients:[],products:[],costs:[],sales:[],payments:[],moves:[],cancels:[],staff:[],invoices:[],slots:[],expenses:[],remittances:[],counts:[],logs:[],settings:[],reminders:[],shifts:[],visits:[]};
+const COLS=['clients','products','costs','sales','payments','moves','cancels','staff','invoices','slots','expenses','remittances','counts','logs','settings','reminders'];
+const S={clients:[],products:[],costs:[],sales:[],payments:[],moves:[],cancels:[],staff:[],invoices:[],slots:[],expenses:[],remittances:[],counts:[],logs:[],settings:[],reminders:[]};
 let DB=null,ME={id:null,name:'',isAdmin:false},NAMES={},mode='local',ready=false,tab='home',query='';
 const lsGet=c=>{try{return JSON.parse(localStorage.getItem('sap_'+c)||'[]')}catch(e){return[]}};
 const lsPut=c=>{try{localStorage.setItem('sap_'+c,JSON.stringify(S[c]))}catch(e){}};
@@ -352,7 +350,6 @@ async function init(){
     setTimeout(()=>{if(!ready){ready=true;rerender()}},2500);
   }
   loadProf();
-  if(window.SAP_STANDALONE&&!ME.isAdmin)setTimeout(()=>resumeShift(),3500);
   $('#who').innerHTML='<span class="badge">'+(ME.isAdmin?'Dirigeant':'Agent')+'</span>';
   render();
 }
@@ -408,6 +405,7 @@ const ow=x=>(x&&x.owner)||'';
 const sh=o=>o?String(o).slice(0,8)+'-':'';
 const bkey=(o,n)=>sh(o)+'f'+n;
 const bookOf=(n,o)=>S.invoices.find(b=>b.num===n&&ow(b)===(o||''));
+// Une vente annulée libère sa page, sauf si on a choisi « la laisser vide » (free:false). Les anciennes annulations (sans choix) libèrent aussi leur page.
 const freedSales=()=>new Set(S.cancels.filter(c=>c.saleId&&c.free!==false).map(c=>c.saleId));
 function usedPages(n,o){o=o||'';const u=new Set(),fr=freedSales();S.sales.forEach(s=>{if(s.fnum===n&&ow(s)===o&&!fr.has(s.id))u.add(s.page)});S.slots.forEach(x=>{if(x.fnum===n&&ow(x)===o&&x.saleId&&!fr.has(x.saleId))u.add(x.page)});return u}
 const PROF={};
@@ -428,21 +426,39 @@ const chiefOf=s=>(s.fnum&&(bookOf(s.fnum,ow(s))||{}).chief)||'—';
 const chiefTelOf=(n,o)=>{const b=bookOf(n,o)||{};const st=S.staff.find(x=>x.name===b.chief);return b.chiefTel||(st&&st.phone)||''};
 const okTel=t=>String(t||'').replace(/\D/g,'').length>=9;
 const staffNames=()=>S.staff.filter(x=>x.active!==false).map(x=>x.name);
+// Vraie panne de réseau ? (sinon, c'est un refus ou une erreur de la base de données)
+const isNetFail=e=>navigator.onLine===false||/failed to fetch|networkerror|network request|load failed|timeout|timed out/i.test(String(e&&e.message||e||''));
+// Message honnête : « pas de connexion » seulement si c'est vraiment le réseau ; sinon on montre la cause.
+const whyFail=e=>isNetFail(e)?'Pas de connexion. Réessaie quand le réseau revient.':'Page de facture indisponible : '+String((e&&e.message)||e||'erreur inconnue').slice(0,140);
+let rpcBroken=false;   // la réservation « claim_slot » de Supabase ne répond pas : on utilise la méthode de secours
 async function claimSlot(f,p,saleId,o){
   o=o||'';
-  if(!DB)return !S.sales.some(s=>s.fnum===f&&s.page===p&&ow(s)===o);
+  if(!DB)return !S.sales.some(s=>s.fnum===f&&s.page===p&&ow(s)===o&&!freedSales().has(s.id));
   const d=DB.doc('slots/'+sh(o)+'F'+f+'P'+p);
-  const r=await d.acquire({holder:ME.id||('t'+Math.random().toString(36).slice(2)),ttlMs:5000});
-  if(!r.acquired)return false;
-  const g=await d.get();if(g.exists&&g.data().saleId)return false;
+  // Réservation encore valable ? Non si elle appartient à une vente annulée dont la page a été libérée.
+  const taken=g=>g.exists&&g.data().saleId&&g.data().saleId!==saleId&&!freedSales().has(g.data().saleId);
+  let verify=rpcBroken;
+  if(!rpcBroken){
+    let r;
+    try{r=await d.acquire({holder:ME.id||('t'+Math.random().toString(36).slice(2)),ttlMs:5000})}
+    catch(e){if(isNetFail(e))throw e;rpcBroken=true;verify=true;r={acquired:true}}
+    if(!r.acquired){
+      // Verrou refusé : si la page est réellement prise, on passe à la suivante ; sinon on la tente avec vérification.
+      if(taken(await d.get()))return false;
+      verify=true;
+    }
+  }
+  if(taken(await d.get()))return false;
   await d.set({saleId,fnum:f,page:p,owner:o,by:ME.id||'',at:Date.now()});
+  if(verify){const v=await d.get();if(!v.exists||v.data().saleId!==saleId)return false}
   return true;
 }
 // Donne la prochaine page libre de la facture choisie (de cet agent) ; si elle est pleine, ouvre la suivante (même chef).
 async function takePage(pref,chiefIfNew,saleId,telIfNew,o){
-  o=o||'';let f=pref;
+  o=o||'';let f=pref,opened=0;
   for(let guard=0;guard<80;guard++){
     if(f==null||!books(o).some(b=>b.num===f&&b.open)){
+      if(++opened>3)throw new Error('Aucune page disponible');
       f=nextFnum(o);await put('invoices',bkey(o,f),{num:f,owner:o,chief:chiefIfNew,chiefTel:telIfNew||'',created:today()});
     }
     const u=usedPages(f,o);
@@ -519,7 +535,6 @@ function vHome(v){
   const emp=Object.entries(d.emp).sort((a,b)=>b[1].t-a[1].t),top=Object.entries(d.prod).sort((a,b)=>b[1].t-a[1].t).slice(0,5);
   const per=PER.k==='day'?"aujourd'hui":PER.k==='week'?'cette semaine':PER.k==='month'?'ce mois':'du '+fdate(R.from)+' au '+fdate(R.to);
   v.innerHTML=`
-  ${shiftCardHTML()}
   <div class="sec" style="margin-top:12px"><h2>Tableau de bord</h2><span>${ME.isAdmin?'Toute l\'activité':'Mes ventes'}</span></div>
   <div class="seg" id="pk">${chips.map(c=>`<button data-k="${c[0]}" aria-pressed="${PER.k===c[0]}">${c[1]}</button>`).join('')}</div>
   <div class="dates" ${PER.k==='custom'?'':'hidden'}><div><label for="pf">Du</label><input id="pf" type="date" value="${R.from}"></div><div><label for="pt2">Au</label><input id="pt2" type="date" value="${R.to}"></div></div>
@@ -544,7 +559,6 @@ function vHome(v){
   ${low.length?`<div class="sec"><h2>Stock bas</h2><span>${low.length}</span></div><div class="list">${low.map(p=>`<div class="row" data-prod="${p.id}"><div class="l"><b>${esc(p.name)}</b><small>Seuil ${p.alert||0}</small></div><div class="r"><span class="pill bad">${stockOf(p.id)} en stock</span></div></div>`).join('')}</div>`:''}
   ${mode==='local'?'<p class="note">Mode téléphone : les données sont enregistrées dans cet appareil uniquement. Ouvrez le lien depuis votre compte Claude pour partager avec vos agents.</p>':''}
   <button class="btn fab fab2" data-act="guided">Mode simple</button><button class="btn fab" data-act="newsale">+ Nouvelle vente</button>`;
-  bindShift(v);
   v.querySelectorAll('#pk button').forEach(b=>b.onclick=()=>{PER.k=b.dataset.k;if(PER.k==='custom'&&!PER.from){const r=rangeOf('month');PER.from=r.from;PER.to=r.to}render()});
   const pf=$('#pf',v),pt=$('#pt2',v);
   if(pf){pf.onchange=()=>{PER.from=pf.value||PER.from;render()};pt.onchange=()=>{PER.to=pt.value||PER.to;render()}}
@@ -638,7 +652,7 @@ function vClients(v){
   const owe=c=>S.sales.filter(s=>s.clientId===c.id&&!isCancelled(s)).reduce((a,s)=>a+saleState(s,P,now).balance,0);
   v.innerHTML=`<div class="sec"><h2>Clients</h2><span>${L.length}</span></div>
   <input class="search" id="q" type="search" placeholder="Nom ou téléphone" value="${esc(query)}">
-  <div class="list">${L.length?L.map(c=>{const o=owe(c);return `<div class="row" data-client="${c.id}"><div class="l"><b>${esc(c.name)}</b><small>${esc(c.phone||'Sans téléphone')}${c.address?' · '+esc(c.address):''}</small></div><div class="r">${o>0?`<b>${money(o)}</b><small>dû</small>`:'<span class="pill ok">À jour</span>'}</div></div>`}).join(''):'<div class="empty">Aucun client. Ajoutez le premier avec le bouton ci-dessous.</div>'}</div>
+  <div class="list">${L.length?L.map(c=>{const o=owe(c);return `<div class="row" data-client="${c.id}"><div class="l"><b>${esc(c.name)}</b><small>${esc(c.phone||'Sans téléphone')}${c.address?' · '+esc(c.address):''}${c.nameVoice?' · 🎙 nom à écouter':''}</small></div><div class="r">${o>0?`<b>${money(o)}</b><small>dû</small>`:'<span class="pill ok">À jour</span>'}</div></div>`}).join(''):'<div class="empty">Aucun client. Ajoutez le premier avec le bouton ci-dessous.</div>'}</div>
   <button class="btn fab" data-act="newclient">+ Client</button>`;
   bindSearch(v);bindRows(v);
 }
@@ -649,11 +663,87 @@ function vStock(v){
   ${ME.isAdmin?'<button class="btn fab" data-act="newprod">+ Produit</button>':''}`;
   bindRows(v);
 }
-const IC={map:'<path d="M12 21s-7-6.2-7-11.5a7 7 0 0114 0C19 14.800 12 21 12 21z"/><circle cx="12" cy="9.500" r="2.500"/>',stock:'<path d="M3 8l9-5 9 5v8l-9 5-9-5zM3 8l9 5 9-5M12 13v8"/>',cash:'<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>',gear:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',down:'<path d="M12 3v12M7 10l5 5 5-5M4 20h16"/>',log:'<path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h4"/>',team:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.5 3-5.5 6.5-5.5s6.5 2 6.5 5.5M17 5a3.5 3.5 0 010 7M21.5 20c0-2.5-1.5-4.2-3.5-5"/>'};
+const IC={stock:'<path d="M3 8l9-5 9 5v8l-9 5-9-5zM3 8l9 5 9-5M12 13v8"/>',cash:'<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>',gear:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',down:'<path d="M12 3v12M7 10l5 5 5-5M4 20h16"/>',log:'<path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h4"/>',team:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.5 3-5.5 6.5-5.5s6.5 2 6.5 5.5M17 5a3.5 3.5 0 010 7M21.5 20c0-2.5-1.5-4.2-3.5-5"/>'};
+/* ========= TEMPORAIRE : importer d'anciennes factures papier (à retirer quand tous les carnets sont saisis) =========
+   Chaque facture est posée sur sa page F…P… (carnet de l'agent choisi), avec sa date d'origine, les paiements déjà reçus
+   (barrés) et les échéances restantes. Aucun mouvement de stock. Une page déjà prise est ignorée : on peut relancer sans doublon. */
+const IMPORT_DATA={"6":[{"p":1,"client":"Adama Awa Ba","tel":"76 403 12 48","date":"2026-07-09","prod":"Bol Lunch Box","qty":1,"unit":60000,"total":60000,"lines":[{"due":"2026-07-15","amount":10000,"paid":10000},{"due":"2026-07-20","amount":10000,"paid":10000},{"due":"2026-07-25","amount":10000,"paid":10000},{"due":"2026-08-01","amount":10000,"paid":10000},{"due":"2026-08-05","amount":10000,"paid":10000},{"due":"2026-08-10","amount":10000,"paid":10000}],"seller":"Massamba Diouf","rec":false,"warn":"Note rouge « 5000 (r… » coupée à droite de la ligne 05/08","skip":false},{"p":2,"client":"Mamadou Djoulde Balde","tel":"78 927 63 18","date":"2026-07-09","prod":"Bol Lunch Box","qty":1,"unit":60000,"total":60000,"lines":[{"due":"2026-08-10","amount":20000,"paid":20000},{"due":"2026-09-10","amount":20000,"paid":0},{"due":"2026-10-10","amount":20000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"","skip":false},{"p":3,"client":"Mamadou Alpha Balde","tel":"75 900 83 91","date":"2026-07-11","prod":"Bol Lunch Box","qty":1,"unit":60000,"total":60000,"lines":[{"due":"2026-08-10","amount":20000,"paid":20000},{"due":"2026-09-10","amount":20000,"paid":20000},{"due":"2026-10-10","amount":20000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Téléphone surchargé (75 9?? ?? 91)","skip":false},{"p":4,"client":"Mominatou Diallo","tel":"77 888 41 29","date":"2026-07-09","prod":"Bol Lunch Box","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-08-10","amount":20000,"paid":20000},{"due":"2026-09-10","amount":15000,"paid":15000},{"due":"2026-10-10","amount":15000,"paid":15000}],"seller":"Massamba Diouf","rec":false,"warn":"SCAN ABÎMÉ : nom et téléphone peu sûrs. À RE-SCANNER","skip":false},{"p":5,"client":"Adama Camara","tel":"77 444 47 31","date":"2026-07-09","prod":"Bol Lunch Box","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-07-09","amount":50000,"paid":50000}],"seller":"Massamba Diouf","rec":false,"warn":"Détail des échéances illisible : à confirmer. Scan à refaire si possible","skip":false},{"p":6,"client":"Dialicka Balde","tel":"78 382 84 73","date":"2026-07-09","prod":"Bol Lunch Box","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-08-10","amount":25000,"paid":25000},{"due":"2026-09-10","amount":25000,"paid":25000}],"seller":"Massamba Diouf","rec":false,"warn":"Note « 40000 » (?) en haut à droite","skip":false},{"p":7,"client":"Fatoumata Bineta Kanté","tel":"78 872 57 96","date":"2026-07-12","prod":"Bol Lunch Box","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-08-10","amount":20000,"paid":20000},{"due":"2026-09-10","amount":15000,"paid":15000},{"due":"2026-10-10","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Ancien numéro barré (78 714 73 15)","skip":false},{"p":8,"client":"Salimata Sidibé","tel":"78 714 73 15","date":"2026-07-12","prod":"Bol 4 pcs gros","qty":1,"unit":60000,"total":60000,"lines":[{"due":"2026-08-10","amount":20000,"paid":0},{"due":"2026-09-10","amount":20000,"paid":0},{"due":"2026-10-10","amount":20000,"paid":0}],"seller":"Massamba Diouf","rec":true,"warn":"","skip":false},{"p":9,"client":"Adama Awa Diallo","tel":"76 845 97 73","date":"2026-07-12","prod":"Bol 3 pcs","qty":1,"unit":55000,"total":55000,"lines":[{"due":"2026-08-10","amount":20000,"paid":20000},{"due":"2026-09-10","amount":20000,"paid":20000},{"due":"2026-10-10","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"","skip":false},{"p":10,"client":"Kadidiatou Konde","tel":"77 889 35 32","date":"2026-07-12","prod":"Bol 4 pcs gras","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-08-10","amount":50000,"paid":50000}],"seller":"Talla","rec":false,"warn":"","skip":false},{"p":11,"client":"Fanta Keita","tel":"78 526 13 17","date":"2026-07-12","prod":"Bol 3 pcs","qty":1,"unit":55000,"total":55000,"lines":[{"due":"2026-08-10","amount":20000,"paid":15000},{"due":"2026-09-10","amount":20000,"paid":15000},{"due":"2026-10-10","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Ici le client est dans le cadre de DROITE (Massamba Diouf à gauche). Total écrit en bas : « 50.000 » alors que les lignes font 55 000","skip":false},{"p":12,"client":"Fatoumata Diallo","tel":"76 338 45 18","date":"2026-07-12","prod":"Bol marmite","qty":1,"unit":55000,"total":55000,"lines":[{"due":"2026-08-10","amount":20000,"paid":20000},{"due":"2026-09-10","amount":20000,"paid":20000},{"due":"2026-10-10","amount":15000,"paid":15000}],"seller":"Massamba Diouf","rec":false,"warn":"Téléphone du vendeur écrit : 77 102 32 08 (différent de 76 381 69 20)","skip":false},{"p":13,"client":"Fatoumata Diallo","tel":"78 866 27 06","date":"2026-07-12","prod":"Bol 4 pcs","qty":1,"unit":45000,"total":45000,"lines":[{"due":"2026-08-10","amount":25000,"paid":25000},{"due":"2026-09-10","amount":20000,"paid":20000}],"seller":"Talla","rec":false,"warn":"Vendeur : 77 102 32 08. Autre cliente prénommée Fatoumata Diallo (P12) : même personne ? numéros différents","skip":false},{"p":14,"client":"Kadidiatou Ba","tel":"77 530 39 84","date":"2026-07-12","prod":"Bol 4 pcs","qty":1,"unit":45000,"total":45000,"lines":[{"due":"2026-08-10","amount":25000,"paid":25000},{"due":"2026-09-10","amount":20000,"paid":20000}],"seller":"Massamba Diouf","rec":false,"warn":"Vendeur : 77 102 32 08","skip":false},{"p":15,"client":"Oumar Coulibaly","tel":"77 574 55 18","date":"2026-07-14","prod":"Ventilateur","qty":1,"unit":40000,"total":40000,"lines":[{"due":"2026-08-15","amount":20000,"paid":20000},{"due":"2026-09-15","amount":20000,"paid":20000}],"seller":"Massamba Diouf","rec":false,"warn":"","skip":false},{"p":16,"client":"Yaya Bouaro","tel":"78 204 43 19","date":"2026-07-16","prod":"Bol 4 pcs (gros)","qty":1,"unit":60000,"total":60000,"lines":[{"due":"2026-08-15","amount":20000,"paid":20000},{"due":"2026-09-15","amount":20000,"paid":20000},{"due":"2026-10-15","amount":20000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Page scannée couchée","skip":false},{"p":17,"client":"Marie Drago","tel":"77 277 28 15","date":"2026-07-16","prod":"Bol Amina","qty":2,"unit":45000,"total":90000,"lines":[{"due":"2026-08-15","amount":30000,"paid":15000},{"due":"2026-09-15","amount":30000,"paid":15000},{"due":"2026-10-15","amount":30000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Quantité 2 ; « Px unité » écrit 90 000 = total (donc 45 000 pièce ?). Page couchée","skip":false},{"p":18,"client":"Ramatoulaye Diallo","tel":"77 049 09 46","date":"2026-07-16","prod":"Bol 24 (gros)","qty":1,"unit":65000,"total":65000,"lines":[{"due":"2026-08-15","amount":20000,"paid":0},{"due":"2026-09-15","amount":20000,"paid":0},{"due":"2026-10-15","amount":25000,"paid":0}],"seller":"Talla","rec":true,"warn":"","skip":false},{"p":19,"client":"Aïssatou Kouyaté","tel":"78 117 62 17","date":"2026-07-21","prod":"Bol 24 petit","qty":1,"unit":40000,"total":40000,"lines":[{"due":"2026-08-15","amount":15000,"paid":10000},{"due":"2026-09-15","amount":15000,"paid":0},{"due":"2026-10-15","amount":10000,"paid":0}],"seller":"Talla","rec":false,"warn":"ERREUR À CONFIRMER : prix 40 000 mais montants des lignes surchargés (lus 25 000 / 25 000 / 20 000). J'ai mis 15 000 / 15 000 / 10 000 : à vérifier","skip":true},{"p":20,"client":"Aïssatou Woury Diallo","tel":"78 898 88 16","date":"2026-07-16","prod":"Bol 24 (gros)","qty":1,"unit":65000,"total":65000,"lines":[{"due":"2026-08-15","amount":20000,"paid":0},{"due":"2026-09-15","amount":20000,"paid":0},{"due":"2026-10-15","amount":25000,"paid":0}],"seller":"Talla","rec":true,"warn":"","skip":false},{"p":21,"client":"Idrissa Gueye","tel":"77 994 58 71","date":"2026-07-19","prod":"Télévision 32 pouces","qty":1,"unit":80000,"total":80000,"lines":[{"due":"2026-08-05","amount":30000,"paid":0},{"due":"2026-08-20","amount":20000,"paid":0},{"due":"2026-09-20","amount":15000,"paid":0},{"due":"2026-10-20","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Vendeur écrit « Yaba Diouf ». Aucune ligne barrée","skip":false},{"p":22,"client":"Mamadou Coulibaly","tel":"78 139 66 80","date":"2026-07-19","prod":"Télévision 32 pouces","qty":1,"unit":80000,"total":80000,"lines":[{"due":"2026-07-19","amount":30000,"paid":30000},{"due":"2026-08-20","amount":20000,"paid":20000},{"due":"2026-09-20","amount":15000,"paid":15000},{"due":"2026-10-20","amount":15000,"paid":5000}],"seller":"Massamba Diouf","rec":false,"warn":"Vendeur écrit « Yaba Diouf »","skip":false},{"p":23,"client":"Elhadji Seydou Gaye","tel":"78 326 33 71","date":"2026-07-19","prod":"Télévision 32 pouces","qty":1,"unit":80000,"total":80000,"lines":[{"due":"2026-08-05","amount":30000,"paid":30000},{"due":"2026-08-20","amount":20000,"paid":5000},{"due":"2026-09-20","amount":15000,"paid":5000},{"due":"2026-10-20","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Notes à droite des lignes difficiles à interpréter","skip":false},{"p":24,"client":"Wowry Bella","tel":"71 147 72 01","date":"2026-07-20","prod":"Bol 4 pcs gros","qty":1,"unit":55000,"total":55000,"lines":[{"due":"2026-08-20","amount":20000,"paid":15000},{"due":"2026-09-20","amount":20000,"paid":0},{"due":"2026-10-20","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Vendeur écrit « Yaba Diouf »","skip":false},{"p":25,"client":"Mariama Siré Diallo","tel":"77 206 15 30","date":"2026-07-20","prod":"Bol marmite","qty":1,"unit":60000,"total":60000,"lines":[{"due":"2026-08-20","amount":20000,"paid":20000},{"due":"2026-09-20","amount":20000,"paid":10000},{"due":"2026-10-20","amount":20000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Vendeur écrit « Yaba Diouf ». Note « Bol 24h » en haut","skip":false},{"p":26,"client":"Khawa Diallo","tel":"78 380 54 65","date":"2026-07-20","prod":"Bol 24h petite","qty":1,"unit":30000,"total":30000,"lines":[{"due":"2026-07-20","amount":5000,"paid":5000},{"due":"2026-08-20","amount":25000,"paid":5000}],"seller":"Massamba Diouf","rec":false,"warn":"Vendeur écrit « Yaba Diouf ». Versement de 5 000 le jour de la vente (barré)","skip":false},{"p":27,"client":"Marietou Sow","tel":"77 886 42 03","date":"2026-07-21","prod":"Bol 20 pcs","qty":1,"unit":60000,"total":60000,"lines":[{"due":"2026-08-20","amount":20000,"paid":20000},{"due":"2026-09-20","amount":20000,"paid":20000},{"due":"2026-10-20","amount":20000,"paid":0},{"due":"2026-11-20","amount":15000,"paid":15000}],"seller":"Massamba Diouf","rec":false,"warn":"ERREUR À CORRIGER : prix 60 000 mais les lignes lues font 75 000 (20 000 / 20 000 / 20 000 / 15 000). Dis-moi les bons montants","skip":true},{"p":28,"client":"Mariama Diallo","tel":"78 453 22 46","date":"2026-07-21","prod":"Bol 24 petit","qty":1,"unit":35000,"total":35000,"lines":[{"due":"2026-08-20","amount":20000,"paid":20000},{"due":"2026-09-20","amount":15000,"paid":15000}],"seller":"Massamba Diouf","rec":false,"warn":"","skip":false},{"p":29,"client":"Oumou Diallo","tel":"77 717 95 96","date":"2026-07-21","prod":"Bol 24 petit","qty":1,"unit":35000,"total":35000,"lines":[{"due":"2026-08-20","amount":20000,"paid":20000},{"due":"2026-09-20","amount":15000,"paid":10000}],"seller":"Massamba Diouf","rec":false,"warn":"","skip":false},{"p":30,"client":"Madioula Touré","tel":"77 730 39 03","date":"2026-07-21","prod":"Bol 24h gros","qty":1,"unit":60000,"total":60000,"lines":[{"due":"2026-08-20","amount":20000,"paid":20000},{"due":"2026-09-20","amount":20000,"paid":18500},{"due":"2026-10-20","amount":20000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"","skip":false},{"p":31,"client":"Mariama Diallo","tel":"78 796 49 29","date":"2026-07-22","prod":"Bol marmite","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-08-20","amount":25000,"paid":25000},{"due":"2026-09-20","amount":25000,"paid":25000}],"seller":"Massamba Diouf","rec":false,"warn":"Note « Liberia » en haut. Autre Mariama Diallo en P28 : même cliente ?","skip":false},{"p":32,"client":"Salimatou","tel":"","date":"2026-07-20","prod":"Bol marmite","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-08-20","amount":25000,"paid":25000},{"due":"2026-09-20","amount":25000,"paid":25000}],"seller":"Massamba Diouf","rec":false,"warn":"76 381 69 20. Date surchargée (20/07 ?)","skip":false},{"p":33,"client":"Mariama Ba","tel":"78 895 76 32","date":"2026-07-22","prod":"Bol 24h (gros)","qty":1,"unit":45000,"total":45000,"lines":[{"due":"2026-08-20","amount":15000,"paid":15000},{"due":"2026-09-20","amount":15000,"paid":0},{"due":"2026-10-20","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"","skip":false},{"p":34,"client":"Aissatou Ba","tel":"78 899 69 95","date":"2026-07-22","prod":"Bol 24h (gros)","qty":1,"unit":45000,"total":45000,"lines":[{"due":"2026-08-20","amount":15000,"paid":15000},{"due":"2026-09-20","amount":15000,"paid":10000},{"due":"2026-10-20","amount":15000,"paid":10000}],"seller":"Massamba Diouf","rec":false,"warn":"20/09 barrée avec « 5000 (av…) » ; 20/10 non barrée avec « 5000 (av…) » : 5000 d’avance sur octobre ?","skip":false},{"p":35,"client":"Adama Baylo","tel":"77 316 89 96","date":"2026-07-22","prod":"Bol 20 pcs","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-08-20","amount":20000,"paid":20000},{"due":"2026-09-20","amount":15000,"paid":5000},{"due":"2026-10-20","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"20/09 barrée mais « 10000 (reste) » : 5000 payé et 10000 restant ?","skip":false},{"p":36,"client":"Bineta Coulibaly","tel":"77 388 49 79","date":"2026-07-22","prod":"Bol 20 pcs","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-08-20","amount":20000,"paid":20000},{"due":"2026-09-20","amount":15000,"paid":10000},{"due":"2026-10-20","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Note en haut « Pas en cou… » illisible","skip":false},{"p":37,"client":"Bineta Diallo","tel":"77 737 71 12","date":"2026-07-21","prod":"Bol 20 pcs","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-08-20","amount":25000,"paid":25000},{"due":"2026-09-20","amount":25000,"paid":25000}],"seller":"Massamba Diouf","rec":false,"warn":"Grand X + 2 lignes barrées : soldée ? Note « (reste) » à côté de la 1re ligne : à confirmer","skip":false},{"p":38,"client":"Sira Kamisokho","tel":"78 835 28 71","date":"2026-07-22","prod":"Bol 20 pcs","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-08-20","amount":25000,"paid":25000},{"due":"2026-09-20","amount":25000,"paid":25000}],"seller":"Massamba Diouf","rec":false,"warn":"2 lignes barrées + grand X : soldée et close","skip":false},{"p":39,"client":"Moussa Diallo","tel":"77 482 17 80","date":"2026-07-15","prod":"Ventilateur solaire","qty":1,"unit":22000,"total":22000,"lines":[{"due":"2026-08-15","amount":22000,"paid":8000}],"seller":"Massamba Diouf","rec":false,"warn":"Montant restant illisible : à confirmer","skip":false},{"p":40,"client":"","tel":"","date":"2026-07-12","prod":"Ventilateur solaire","qty":1,"unit":30000,"total":30000,"lines":[{"due":"2026-08-15","amount":30000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Aucun nom de client écrit : à compléter","skip":false},{"p":41,"client":"Cheikh Sall","tel":"77 829 42 63","date":"2026-07-23","prod":"Bol marmite","qty":1,"unit":40000,"total":40000,"lines":[{"due":"2026-08-20","amount":20000,"paid":20000},{"due":"2026-09-20","amount":20000,"paid":15000}],"seller":"Talla","rec":false,"warn":"5000 d'avance lu : j'ai compté 5000 restants sur septembre","skip":false},{"p":42,"client":"Diaynaba Diallo","tel":"77 830 74 37","date":"2026-07-24","prod":"Bol 24 petit","qty":1,"unit":40000,"total":40000,"lines":[{"due":"2026-08-25","amount":15000,"paid":15000},{"due":"2026-09-25","amount":10000,"paid":10000},{"due":"2026-10-25","amount":15000,"paid":0}],"seller":"Talla","rec":false,"warn":"","skip":false},{"p":43,"client":"Ibrahima Seedy","tel":"71 156 82 96","date":"2026-07-27","prod":"Bol 24h petite","qty":1,"unit":30000,"total":30000,"lines":[{"due":"2026-08-07","amount":30000,"paid":10000}],"seller":"Massamba Diouf","rec":false,"warn":"20000 restant → 10000 déjà payé ? Nom « Seedy/Sooly » à confirmer","skip":false},{"p":44,"client":"Mamadou Wourry","tel":"78 736 64 85","date":"2026-07-27","prod":"Bol 24h petit","qty":1,"unit":30000,"total":30000,"lines":[{"due":"2026-08-10","amount":15000,"paid":15000},{"due":"2026-08-24","amount":15000,"paid":15000}],"seller":"Massamba Diouf","rec":false,"warn":"2 lignes barrées + grand X : soldée ; « 1000 (rst) » reste-t-il 1000 à payer ?","skip":false},{"p":45,"client":"Solagy Bendia","tel":"77 917 26 78","date":"2026-07-27","prod":"Bol 20 pcs","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-09-01","amount":20000,"paid":10000},{"due":"2026-10-01","amount":15000,"paid":0},{"due":"2026-11-01","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"« Coumba » écrit au-dessus du nom. 1re ligne barrée avec « 10000 (reste) » : 10000 payés et 10000 restants ?","skip":false},{"p":46,"client":"Oumy Ndiaye","tel":"77 353 20 14","date":"2026-07-27","prod":"Tablette","qty":1,"unit":75000,"total":null,"lines":[{"due":"2026-08-10","amount":15000,"paid":15000},{"due":"2026-09-01","amount":30000,"paid":30000},{"due":"2026-10-01","amount":15000,"paid":10000},{"due":"2026-11-01","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Total non écrit (lignes = 75000). Date surchargée (27 ou 21/07)","skip":false},{"p":47,"client":"Coumba Diallo","tel":"77 379 51 15","date":"2026-07-28","prod":"Ventilateur grand","qty":1,"unit":35000,"total":35000,"lines":[{"due":"2026-09-01","amount":20000,"paid":15000},{"due":"2026-10-01","amount":15000,"paid":10000}],"seller":"Massamba Diouf","rec":false,"warn":"« 5000 (reste) » sur les deux lignes","skip":false},{"p":48,"client":"Modou Diallo","tel":"78 162 46 71","date":"2026-08-11","prod":"Climatiseur","qty":1,"unit":80000,"total":80000,"lines":[{"due":"2026-08-11","amount":30000,"paid":20000},{"due":"2026-09-10","amount":20000,"paid":0},{"due":"2026-10-10","amount":15000,"paid":0},{"due":"2026-11-10","amount":15000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Acompte 30000 dont il reste 10000 (donc 20000 reçus). Date de vente surchargée (11/08)","skip":false},{"p":49,"client":"Aissatou Lama Ba","tel":"77 589 36 87","date":"2026-08-12","prod":"Bol 20 pcs","qty":1,"unit":50000,"total":50000,"lines":[{"due":"2026-09-10","amount":20000,"paid":20000},{"due":"2026-10-10","amount":15000,"paid":15000},{"due":"2026-11-10","amount":15000,"paid":15000}],"seller":"Massamba Diouf","rec":false,"warn":"3 lignes barrées + grand X rouge : soldée et close","skip":false},{"p":50,"client":"Bineta Diallo","tel":"78 957 19 63","date":"2026-08-12","prod":"Bol 24h","qty":1,"unit":40000,"total":40000,"lines":[{"due":"2026-09-10","amount":15000,"paid":15000},{"due":"2026-10-10","amount":15000,"paid":15000},{"due":"2026-11-10","amount":10000,"paid":0}],"seller":"Massamba Diouf","rec":false,"warn":"Même prénom/nom que P37 (Bineta Diallo, autre téléphone) : même cliente ?","skip":false}]};
+function impPlan(r){
+  const lines=r.lines.map(l=>({due:l.due,amount:l.amount,paid:l.paid}));
+  const total=r.total||lines.reduce((a,l)=>a+l.amount,0);
+  let dep=0,sched=[];
+  const f=lines[0];
+  if(f&&f.due===r.date){
+    lines.shift();dep=f.paid;
+    if(f.amount-f.paid>0)lines.unshift({due:r.date,amount:f.amount-f.paid,paid:0});
+  }
+  sched=lines.map((l,i)=>({n:i+1,due:l.due,amount:l.amount}));
+  const pay=[];const t=today();
+  if(dep>0)pay.push({kind:sched.length?'acompte':'comptant',amount:dep,date:r.date});
+  lines.forEach(l=>{if(l.paid>0)pay.push({kind:'versement',amount:l.paid,date:l.due>t?t:l.due})});
+  const paid=pay.reduce((a,p)=>a+p.amount,0);
+  return{total,dep,sched,pay,paid,type:sched.length?'credit':'comptant',balance:r.rec?0:Math.max(0,total-paid)};
+}
+function openImport(){
+  if(!ME.isAdmin)return;
+  sheet('Importer d\'anciennes factures',`<div class="card"><p class="note" style="margin-top:0">Écran temporaire (dirigeant). Les ventes sont posées sur leur page de carnet, avec les paiements déjà reçus. Le stock n'est pas modifié.</p>
+  <label for="ic">Carnet</label><select id="ic">${Object.keys(IMPORT_DATA).map(n=>`<option value="${n}">F${n}</option>`).join('')}</select>
+  <label for="io" style="margin-top:10px">Ce carnet appartient à l'agent</label><select id="io"></select>
+  <p class="note" id="ihelp"></p></div><div id="ilist"></div><p class="note" id="ires"></p>`,async(el,o)=>{
+    await loadProf();
+    const ids=Object.keys(PROF).filter(id=>id!==ME.id);
+    const sel=$('#io',el);
+    sel.innerHTML=ids.map(id=>`<option value="${id}">${esc(PROF[id].name||id)}${PROF[id].active===false?' (désactivé)':''}</option>`).join('');
+    const pre=ids.find(id=>/bathi/i.test(PROF[id].name||''));if(pre)sel.value=pre;
+    $('#ihelp',el).textContent=ids.length?(pre?'Agent reconnu : '+PROF[pre].name+'. Vérifie que c\'est le bon.':'Choisis l\'agent propriétaire de ce carnet.'):'Aucun compte agent trouvé : crée d\'abord le compte de l\'agent.';
+    const draw=()=>{
+      const n=+val(el,'ic'),own=val(el,'io'),used=usedPages(n,own),L=IMPORT_DATA[n]||[];
+      $('#ilist',el).innerHTML=`<div class="list">${L.map(r=>{
+        const pl=impPlan(r),taken=used.has(r.p);
+        const name=r.client||('Client F'+n+'P'+r.p);
+        return `<div class="row" style="align-items:flex-start"><label style="display:flex;gap:10px;align-items:flex-start;width:100%;margin:0"><input type="checkbox" data-p="${r.p}" ${taken||r.skip?'':'checked'} ${taken?'disabled':''} style="margin-top:4px;width:auto"><span class="l" style="min-width:0"><b>F${n}P${r.p} · ${esc(name)}</b><small>${esc(r.prod||'')} · ${money(pl.total)} · payé ${money(pl.paid)} · reste ${money(pl.balance)}${r.rec?' · produit récupéré':''}${taken?' · page déjà prise':''}</small>${r.warn?`<small style="color:var(--bad)">${esc(r.warn)}</small>`:''}${r.skip?'<small style="color:var(--bad)">À vérifier avant : décochée</small>':''}<small>Vendeur : ${esc(r.seller)}</small></span></label></div>`}).join('')}</div><button class="btn" id="igo" style="margin-top:12px">Importer les factures cochées</button>`;
+      $('#igo',el).onclick=run;
+    };
+    async function run(){
+      const n=+val(el,'ic'),own=val(el,'io');if(!own){toast('Choisis l\'agent');return}
+      const picks=[...el.querySelectorAll('[data-p]:checked')].map(c=>+c.dataset.p);
+      if(!picks.length){toast('Aucune facture cochée');return}
+      if(!confirm('Importer '+picks.length+' facture(s) sur le carnet F'+n+' de '+(PROF[own]&&PROF[own].name)+' ?'))return;
+      const b=$('#igo',el);b.disabled=true;const res=$('#ires',el);let ok=0,skip=[],fail=[];
+      try{
+        if(!bookOf(n,own))await put('invoices',bkey(own,n),{num:n,owner:own,chief:'Massamba Diouf',chiefTel:'76 381 69 20',created:today()});
+        for(const nm of['Talla','Massamba Diouf'])if(!S.staff.some(s=>s.name===nm))await put('staff',uid('e'),{name:nm,phone:nm==='Massamba Diouf'?'76 381 69 20':'',active:true});
+        const byTel={};
+        S.clients.forEach(c=>{const d=String(c.phone||'').replace(/\D/g,'').slice(-9);if(d.length===9)byTel[d]=c.id});
+        for(const r of IMPORT_DATA[n].filter(r=>picks.includes(r.p))){
+          res.textContent='Import en cours… F'+n+'P'+r.p;
+          try{
+            if(usedPages(n,own).has(r.p)){skip.push(r.p);continue}
+            const pl=impPlan(r),sid=uid('s');
+            if(!await claimSlot(n,r.p,sid,own)){skip.push(r.p);continue}
+            const d9=String(r.tel||'').replace(/\D/g,'').slice(-9);
+            let cid=d9.length===9?byTel[d9]:'';
+            if(!cid){cid=uid('c');await put('clients',cid,{name:r.client||('Client F'+n+'P'+r.p),phone:r.tel||'',city:'',address:'',landmark:'',geo:'',job:'',idno:'',created:r.date,agent:own,incomplete:!r.client,imported:true});if(d9.length===9)byTel[d9]=cid}
+            const pn=String(r.prod||'').trim().toLowerCase(),pr=S.products.find(p=>p.name.trim().toLowerCase()===pn);
+            const lines=[{productId:pr?pr.id:'imp-'+pn.replace(/[^a-z0-9]+/g,'-'),name:r.prod||'Article',qty:r.qty||1,price:r.unit||pl.total,listPrice:r.unit||pl.total}];
+            await put('sales',sid,{number:nextNumber('V'),date:r.date,clientId:cid,agent:own,byAdmin:false,fnum:n,page:r.p,owner:own,seller:r.seller,lines,total:pl.total,type:pl.type,deposit:pl.dep,months:pl.sched.length,schedule:pl.sched,created:new Date().toISOString(),imported:true});
+            if(!r.rec)for(const p of pl.pay)await put('payments',uid('y'),{number:nextNumber('R'),saleId:sid,clientId:cid,amount:p.amount,kind:p.kind,method:'Espèces',ref:'Import F'+n+'P'+r.p,collector:r.seller,date:p.date,time:p.date+'T12:00:00.000Z',agent:own,byAdmin:false,imported:true});
+            if(r.rec)await put('cancels','cs_'+sid,{saleId:sid,reason:'Produit récupéré chez le client (ancienne facture)',by:ME.id,date:today(),free:false});
+            ok++;
+          }catch(e){console.warn('import',r.p,e);fail.push('P'+r.p+' ('+String((e&&e.message)||e).slice(0,60)+')')}
+        }
+        await logAct('Import anciennes factures','F'+n+' · '+ok+' importée(s) pour '+((PROF[own]&&PROF[own].name)||own));
+      }catch(e){fail.push(String((e&&e.message)||e).slice(0,100))}
+      res.innerHTML='Terminé : <b>'+ok+'</b> facture(s) importée(s).'+(skip.length?' Déjà prises, ignorées : P'+skip.join(', P')+'.':'')+(fail.length?'<br><span style="color:var(--bad)">Échecs : '+esc(fail.join(' · '))+'</span>':'');
+      draw();
+    }
+    $('#ic',el).onchange=draw;sel.onchange=draw;draw();
+  });
+}
+
 function vMore(v){
   const item=(k,t,sub,act)=>`<div class="row" data-m="${act}"><div style="display:flex;align-items:center;min-width:0"><div class="ic"><svg viewBox="0 0 24 24">${IC[k]}</svg></div><div class="l"><b>${t}</b><small>${sub}</small></div></div><span style="color:var(--mute)">›</span></div>`;
   v.innerHTML=`<div class="sec" style="margin-top:12px"><h2>Plus</h2><span>${ME.isAdmin?'Dirigeant':'Agent'}</span></div><div class="list menu">
-    ${ME.isAdmin&&window.SAP_STANDALONE?item('map','Terrain (GPS)','Position des agents, visites et trajets pendant le service','terrain'):''}
     ${ME.isAdmin?item('team','Accès des agents','Activer ou désactiver un compte, changer un nom','access'):''}
     ${item('stock','Stock et produits','Catalogue, quantités, mouvements','stock')}
     ${ME.isAdmin?item('cash','Caisse et dépenses','Espèces, dépenses, remises, écarts','cash'):''}
@@ -662,9 +752,10 @@ function vMore(v){
     ${ME.isAdmin?item('down','Voix en wolof','Enregistrer les consignes de la vente guidée','voice'):''}
     ${ME.isAdmin?item('down','Exporter les données','Ventes, paiements, échéances, clients (Excel)','exp'):''}
     ${item('gear','Mode simple (photos et voix)','Vente guidée pour les employés qui ne lisent pas','simple')}
+    ${ME.isAdmin?item('down','Importer d\'anciennes factures','Temporaire : saisir les carnets papier d\'un agent','imp'):''}
     ${ME.isAdmin?item('log','Journal des opérations','Annulations, changements de chef, stock','log'):''}
   </div>`;
-  v.querySelectorAll('[data-m]').forEach(r=>r.onclick=()=>({stock:()=>{tab='stock';render()},cash:()=>openCash(),staff:()=>openStaff(),comp:()=>openCompany(),exp:()=>openExports(),log:()=>openJournal(),simple:()=>openSimpleSettings(),access:()=>openAccess(),terrain:()=>openTerrain(),voice:()=>openVoices()})[r.dataset.m]());
+  v.querySelectorAll('[data-m]').forEach(r=>r.onclick=()=>({stock:()=>{tab='stock';render()},cash:()=>openCash(),staff:()=>openStaff(),comp:()=>openCompany(),exp:()=>openExports(),log:()=>openJournal(),simple:()=>openSimpleSettings(),access:()=>openAccess(),voice:()=>openVoices(),imp:()=>openImport()})[r.dataset.m]());
 }
 function bindSearch(v){const q=$('#q',v);if(!q)return;q.oninput=()=>{query=q.value;const pos=q.selectionStart;render();const n=$('#q');n.focus();n.setSelectionRange(pos,pos)}}
 function bindRows(v){
@@ -690,7 +781,8 @@ const num=(el,id)=>Math.max(0,Math.round(Number(String(val(el,id)).replace(/\s/g
 function openClientForm(id){
   const c=id?byId(S.clients,id):null;
   sheet(c?'Modifier le client':'Nouveau client',`
-    <label for="cn">Nom complet *</label><input id="cn" value="${esc(c&&c.name)}" autocomplete="off">
+    <label for="cn">Nom complet *</label><div style="display:flex;gap:8px"><input id="cn" value="${esc(c&&c.name)}" autocomplete="off" autocapitalize="words" style="flex:1;min-width:0">${speechAPI()?'<button type="button" class="btn sec2 sm" id="cmic" aria-label="Dire le nom" style="flex:none">🎤 Dire</button>':''}</div>
+    ${c&&c.nameVoice?`<audio controls src="${c.nameVoice}" style="width:100%;margin-top:6px"></audio>`:''}
     <label for="cp">Téléphone</label><input id="cp" type="tel" inputmode="tel" value="${esc(c&&c.phone)}">
     <label for="cv">Ville ou commune</label><input id="cv" list="villes" value="${esc(c&&c.city)}" placeholder="Ex. Dakar, Thiès, Touba"><datalist id="villes"><option>Dakar</option><option>Pikine</option><option>Guédiawaye</option><option>Rufisque</option><option>Thiès</option><option>Mbour</option><option>Touba</option><option>Diourbel</option><option>Kaolack</option><option>Saint-Louis</option><option>Ziguinchor</option><option>Louga</option><option>Tambacounda</option><option>Kolda</option></datalist>
     <label for="ca">Quartier et adresse</label><input id="ca" value="${esc(c&&c.address)}" placeholder="Ex. Parcelles Assainies, Unité 15, villa 120">
@@ -700,6 +792,7 @@ function openClientForm(id){
     <label for="cj">Profession</label><input id="cj" value="${esc(c&&c.job)}">
     <label for="ci">Pièce d'identité (facultatif)</label><input id="ci" value="${esc(c&&c.idno)}">
     <p class="note" id="dup"></p><div style="height:14px"></div><button class="btn" id="ok">Enregistrer</button>`,(el,o)=>{
+    const cm=$('#cmic',el);if(cm)cm.onclick=()=>listenName(cm,t=>{$('#cn',el).value=t;$('#dup',el).textContent=''},m=>{$('#dup',el).textContent=m});
     $('#ok',el).onclick=async()=>{
       const name=val(el,'cn').trim();if(!name){$('#dup',el).textContent='Le nom est obligatoire.';return}
       const phone=val(el,'cp').trim();const geo=val(el,'cl').trim();
@@ -707,7 +800,7 @@ function openClientForm(id){
       const dup=S.clients.find(x=>x.id!==(c&&c.id)&&phone&&x.phone===phone);
       if(dup&&!el.dataset.sure){$('#dup',el).textContent='Attention : '+dup.name+' a déjà ce numéro. Touchez encore « Enregistrer » pour créer quand même.';el.dataset.sure=1;return}
       const nid=c?c.id:uid('c');
-      await put('clients',nid,{...(c||{}),name,phone,city:val(el,'cv').trim(),address:val(el,'ca').trim(),landmark:val(el,'cm').trim(),geo,job:val(el,'cj').trim(),idno:val(el,'ci').trim(),created:c?c.created:today(),agent:c?c.agent:ME.id});
+      await put('clients',nid,{...(c||{}),name,phone,city:val(el,'cv').trim(),address:val(el,'ca').trim(),landmark:val(el,'cm').trim(),geo,job:val(el,'cj').trim(),idno:val(el,'ci').trim(),created:c?c.created:today(),agent:c?c.agent:ME.id,incomplete:/^Client\s/.test(name),nameVoice:/^Client\s/.test(name)?((c&&c.nameVoice)||''):''});
       toast('Client enregistré');o.close();if(!c&&o.after)o.after(nid);
     };
   });
@@ -720,14 +813,13 @@ function openClient(id){
     const P=pays(),now=today();
     const L=S.sales.filter(s=>s.clientId===id&&!isCancelled(s)).sort((a,b)=>b.date.localeCompare(a.date)).map(s=>({s,st:saleState(s,P,now)}));
     const owed=L.reduce((a,x)=>a+x.st.balance,0);
-    setBody(o,`<div class="card"><div class="tot"><span>Téléphone</span><b>${esc(cc.phone||'—')}</b></div><div class="tot"><span>Ville</span><b style="text-align:right">${esc(cc.city||'—')}</b></div><div class="tot"><span>Adresse</span><b style="text-align:right">${esc(cc.address||'—')}</b></div>${cc.landmark?`<div class="tot"><span>Repère</span><b style="text-align:right">${esc(cc.landmark)}</b></div>`:''}<div class="tot"><span>Profession</span><b>${esc(cc.job||'—')}</b></div><div class="tot g"><span>Reste à payer</span><span>${money(owed)}</span></div></div>
+    setBody(o,`${cc.nameVoice?`<div class="card" style="margin-bottom:10px"><b>Nom dit à la voix par l'employé</b><audio controls src="${cc.nameVoice}" style="width:100%;margin-top:8px"></audio><p class="note" style="margin:6px 0 0">Écoute, puis touche « Modifier » pour écrire le nom.</p></div>`:''}<div class="card"><div class="tot"><span>Téléphone</span><b>${esc(cc.phone||'—')}</b></div><div class="tot"><span>Ville</span><b style="text-align:right">${esc(cc.city||'—')}</b></div><div class="tot"><span>Adresse</span><b style="text-align:right">${esc(cc.address||'—')}</b></div>${cc.landmark?`<div class="tot"><span>Repère</span><b style="text-align:right">${esc(cc.landmark)}</b></div>`:''}<div class="tot"><span>Profession</span><b>${esc(cc.job||'—')}</b></div><div class="tot g"><span>Reste à payer</span><span>${money(owed)}</span></div></div>
     ${phoneIntl(cc.phone)?`<div class="acts" style="margin-top:10px"><a href="tel:+${phoneIntl(cc.phone)}">Appeler</a><a class="wa" href="https://wa.me/${phoneIntl(cc.phone)}" target="_blank" rel="noopener">WhatsApp</a><button type="button" data-copy="${esc(cc.name+' +'+phoneIntl(cc.phone))}">Contact</button></div>`:''}
     ${cc.geo||cc.address||cc.city?`<a class="btn sec2" style="display:block;text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="${esc(cc.geo||('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent([cc.address,cc.city,'Sénégal'].filter(Boolean).join(', '))))}">${cc.geo?'Ouvrir la position du client':'Chercher l\'adresse sur la carte'}</a>`:'<p class="note">Aucune localisation. Touchez « Modifier » pour l\'ajouter.</p>'}
-    ${cc.nameAudio?'<button type="button" class="btn sec2" id="na" style="margin-top:10px">Écouter le nom du client</button>':''}
-    <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="ns">Nouvelle vente</button><button class="btn sec2" id="vst">Visite</button><button class="btn line" id="ed">Modifier</button></div>
+    <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="ns">Nouvelle vente</button><button class="btn line" id="ed">Modifier</button></div>
     <div class="sec"><h2>Historique</h2><span>${L.length}</span></div>
     <div class="list">${L.length?L.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>${esc(ref(x.s))}</b><small>${fdate(x.s.date)} · ${trLabel(x.s)} · ${esc(sellerOf(x.s))}</small></div><div class="r"><b>${money(x.s.total)}</b><span class="pill ${stPill(x.st.status)}">${x.st.status}</span></div></div>`).join(''):'<div class="empty">Aucun achat.</div>'}</div>`);
-    const vs=$('#vst',o.el);if(vs)vs.onclick=()=>openVisit(id);const na=$('#na',o.el);if(na)na.onclick=()=>playData(cc.nameAudio);$('#ns',o.el).onclick=()=>openNewSale(id);$('#ed',o.el).onclick=()=>openClientForm(id);
+    $('#ns',o.el).onclick=()=>openNewSale(id);$('#ed',o.el).onclick=()=>openClientForm(id);
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
   }
   draw();
@@ -972,8 +1064,8 @@ function openNewSale(clientId){
       const lines=L.map(l=>{const p=byId(S.products,l.pid);return{productId:p.id,name:p.name,qty:l.qty,price:unit(l),listPrice:catalog(p)}});
       let slot;
       try{const pb=sb.value==='new'?{n:null,o:ME.id||''}:bk_(sb.value),prefB=pb.n;const inherit=sb.value==='new'?(sch.value||seller):((bookOf(prefB,pb.o)||{}).chief||seller);if(prefB!=null&&!chiefTelOf(prefB,pb.o)){const bk=bookOf(prefB,pb.o)||{num:prefB,owner:pb.o,created:today()};await put('invoices',bkey(pb.o,prefB),{...bk,chiefTel:telV})}slot=await takePage(prefB,inherit,sid,telV,pb.o)}
-      catch(e){err.textContent='Impossible d\'attribuer une page de facture. Réessayez.';$('#ok',el).disabled=false;return}
-      await put('sales',sid,{number:num_,date,clientId:w.clientId,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,pos:posNow(),seller,lines,total:t,type:w.type,deposit:dep,months:sorted.length,schedule:sorted,created:new Date().toISOString()});
+      catch(e){console.warn('takePage',e);err.textContent='Impossible d\'attribuer une page de facture. '+whyFail(e);$('#ok',el).disabled=false;return}
+      await put('sales',sid,{number:num_,date,clientId:w.clientId,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller,lines,total:t,type:w.type,deposit:dep,months:sorted.length,schedule:sorted,created:new Date().toISOString()});
       const method=val(el,'mm'),ref=val(el,'mr').trim();
       const amt=w.type==='credit'?dep:t;
       if(amt>0)await put('payments',uid('y'),{number:nextNumber('R'),saleId:sid,clientId:w.clientId,amount:amt,kind:w.type==='credit'?'acompte':'comptant',method,ref,collector:ME.isAdmin?DIRECT:seller,date:today(),time:new Date().toISOString(),agent:ME.id,byAdmin:ME.isAdmin});
@@ -1319,6 +1411,8 @@ const isSimple=()=>lsg(SIMPLE_KEY)==='1';
 .gd-done .chk svg{width:64px;height:64px;stroke:#fff;fill:none;stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round}
 .gd-done .ref{font:800 64px/1 var(--f-body);color:var(--accent);margin:8px 0}
 .gd-err{color:var(--bad);text-align:center;font-weight:600;min-height:20px}
+.gd-mic{height:76px;border-radius:20px;border:2px solid var(--accent);background:var(--card);color:var(--accent);display:flex;align-items:center;justify-content:center;gap:12px;font:800 22px var(--f-body);cursor:pointer;width:100%}
+.gd-mic svg{width:34px;height:34px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .vrow{border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:10px;background:var(--card)}
 .vrow p{margin:2px 0 8px;color:var(--mute);font-size:13px}.vrow .acts button{flex:1}
 .rec{background:var(--bad)!important;color:#fff!important}
@@ -1340,8 +1434,10 @@ const thumb=p=>p&&p.img?`<img class="th" src="${p.img}" alt="">`:`<div class="th
 
 /* ----- Voix en wolof (enregistrées par le dirigeant) ----- */
 const VOICES=[
+  ['seller','Qui a vendu','Choisis ton nom : touche ton nom dans la liste.'],
   ['phone','Numéro du client','Tape le numéro de téléphone du client.'],
-  ['name','Nom du client','Dis le nom du client dans le micro : touche le micro, parle, puis touche la coche verte.'],
+  ['name','Nom du client','Donne-moi le nom du client : touche le micro et dis le nom.'],
+  ['price','Prix du produit','Écris le prix exact dont tu as parlé avec le client, puis touche la coche verte.'],
   ['product','Choix du produit','Touche la photo du produit.'],
   ['qty','Quantité','Combien en vend-on ? Touche + ou −, puis la coche verte.'],
   ['type','Comptant ou crédit','Le client paye tout maintenant (comptant) ou petit à petit (crédit) ?'],
@@ -1357,17 +1453,7 @@ function playVoice(k,quiet){
   const v=voiceDoc(k);if(!v||!v.url)return false;
   try{if(curAudio){curAudio.pause();curAudio=null}curAudio=new Audio(v.url);const pr=curAudio.play();if(pr&&pr.catch)pr.catch(()=>{});return true}catch(e){return false}
 }
-function playData(url){try{if(curAudio){curAudio.pause();curAudio=null}curAudio=new Audio(url);const pr=curAudio.play();if(pr&&pr.catch)pr.catch(()=>{});return true}catch(e){return false}}
-async function recordClip(maxMs){
-  const st=await navigator.mediaDevices.getUserMedia({audio:true});
-  const types=['audio/webm;codecs=opus','audio/mp4','audio/webm'];const mt=types.find(t=>window.MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t));
-  const r=new MediaRecorder(st,mt?{mimeType:mt,audioBitsPerSecond:24000}:{audioBitsPerSecond:24000});const ch=[];
-  r.ondataavailable=e=>{if(e.data&&e.data.size)ch.push(e.data)};
-  const done=new Promise(res=>{r.onstop=async()=>{st.getTracks().forEach(t=>t.stop());clearTimeout(tm);const blob=new Blob(ch,{type:r.mimeType||mt||'audio/webm'});if(blob.size<800||blob.size>200000)return res('');res(await new Promise(rs=>{const f=new FileReader();f.onload=()=>rs(f.result);f.readAsDataURL(blob)}))}});
-  r.start();const tm=setTimeout(()=>{try{r.stop()}catch(e){}},maxMs||6000);
-  return{stop:()=>{try{r.stop()}catch(e){}},done};
-}
-function openVoices(){
+function openVoices(focusKey){
   const canRec=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.MediaRecorder);
   const o=sheet('Voix en wolof','',(el,o)=>{o.refresh=draw});
   let rec=null,recKey='';
@@ -1379,6 +1465,7 @@ function openVoices(){
     o.el.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>playVoice(b.dataset.p));
     o.el.querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{const v=voiceDoc(b.dataset.d);if(v){await put('settings',v.id,{key:b.dataset.d,url:'',at:Date.now()});if(!DB){S.settings=S.settings.filter(x=>x.id!==v.id);lsPut('settings')}toast('Voix effacée');draw()}});
     o.el.querySelectorAll('[data-r]').forEach(b=>b.onclick=()=>toggleRec(b.dataset.r));
+    if(focusKey){const t=o.el.querySelector('[data-r="'+focusKey+'"]');focusKey=null;if(t){const row=t.closest('.vrow');if(row){row.style.borderColor='var(--gold)';row.style.borderWidth='2px'}setTimeout(()=>{try{t.scrollIntoView({block:'center'})}catch(e){}},50)}}
   }
   async function toggleRec(k){
     const err=$('#verr',o.el);err.textContent='';
@@ -1406,13 +1493,33 @@ function openVoices(){
 
 /* ----- Vente guidée ----- */
 const GI={
+  mic:'<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/>',
   back:'<path d="M15 5l-7 7 7 7"/>',spk:'<path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 8.5a5 5 0 010 7M18.5 6a8.5 8.5 0 010 12"/>',
   ok:'<path d="M5 12.5l4.5 4.5L19 7.5"/>',bs:'<path d="M20 5H9l-6 7 6 7h11z"/><path d="M12 9.5l5 5M17 9.5l-5 5"/>',
   cash:'<rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.8"/><path d="M6 9.5v.01M18 14.5v.01"/>',
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
+const APP_VER='23-10 · v5';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
+/* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
+const speechAPI=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
+function listenName(btn,onText,onErr){
+  const SR=speechAPI();if(!SR){if(btn.onfatal)btn.onfatal('absent');else onErr('La voix n\'est pas disponible sur ce téléphone. Écris le nom.');return}
+  if(btn._rec){try{btn._rec.stop()}catch(e){}return}
+  const sp=btn.querySelector('span'),lab=sp?sp.textContent:'',setL=t=>{if(sp)sp.textContent=t};
+  const r=new SR();r.lang='fr-FR';r.interimResults=false;r.maxAlternatives=1;btn._rec=r;onErr('');
+  r.onstart=()=>{btn.classList.add('rec');setL('Je t\'écoute…')};
+  r.onresult=e=>{const t=((e.results[0]&&e.results[0][0]&&e.results[0][0].transcript)||'').trim();if(t)onText(t.replace(/(^|[\s'-])(\p{L})/gu,(m,a,b)=>a+b.toUpperCase()))};
+  r.onerror=e=>{
+    const k=e.error;
+    if(k==='no-speech'||k==='aborted'){onErr(k==='no-speech'?'Rien entendu. Touche le micro et dis le nom.':'');return}
+    if(k==='not-allowed'){onErr('Micro refusé. Autorise-le dans les réglages du navigateur.');return}
+    if(btn.onfatal)btn.onfatal(k);else onErr(k==='network'?'La voix demande internet. Écris le nom.':'Voix indisponible. Écris le nom.');
+  };
+  r.onend=()=>{btn._rec=null;btn.classList.remove('rec');setL(lab||'Dire le nom')};
+  try{r.start()}catch(e){btn._rec=null;btn.classList.remove('rec');if(btn.onfatal)btn.onfatal('start');else onErr('Voix indisponible. Écris le nom.')}
+}
 function openGuided(){
   const g={step:'',phone:'',client:null,pid:'',qty:1,type:'',months:0,dep:0,method:'Espèces',seller:lsg(SELLER_KEY),buf:'',ref:'',sid:'',price:0,newPhone:''};
   const o=sheet('Vente guidée','',()=>{});
@@ -1421,10 +1528,12 @@ function openGuided(){
   const unit=()=>g.price||cat();
   const total=()=>unit()*g.qty;
   const flow=()=>['phone'].concat(g.newPhone&&!g.client?['name']:[]).concat(['product','qty','type','price']).concat(g.type==='credit'?['months','deposit']:[]).concat((g.type==='credit'?g.dep>0:g.type==='cash')?['method']:[]).concat(['recap']);
-  const voiceMap={name:'name',price:'type',phone:'phone',product:'product',qty:'qty',type:'type',months:'months',deposit:'deposit',method:'method',recap:'recap',done:'done'};
+  const voiceMap={seller:'seller',name:'name',price:'price',phone:'phone',product:'product',qty:'qty',type:'type',months:'months',deposit:'deposit',method:'method',recap:'recap',done:'done'};
+  const voiceHint=()=>{const k=voiceMap[g.step];return ME.isAdmin&&k&&!voiceDoc(k)?'<button type="button" class="gd-no" id="gvo" style="border-color:var(--gold);color:var(--ink)">Dirigeant : enregistrer ta voix pour cette étape</button>':''};
   const shell=(inner,opts={})=>{
     const fl=flow(),i=fl.indexOf(g.step),dots=i>=0?`<div class="gd-dots" aria-hidden="true">${fl.map((_,j)=>`<i class="${j<=i?'on':''}"></i>`).join('')}</div>`:'<div></div>';
-    setBody(o,`<div class="gd"><div class="gd-top">${opts.noback?'<div style="width:56px"></div>':`<button type="button" id="gb" aria-label="Retour">${gsvg('back')}</button>`}${dots}<button type="button" id="gs" aria-label="Écouter la consigne">${gsvg('spk')}</button></div>${inner}</div>`);
+    setBody(o,`<div class="gd"><div class="gd-top">${opts.noback?'<div style="width:56px"></div>':`<button type="button" id="gb" aria-label="Retour">${gsvg('back')}</button>`}${dots}<button type="button" id="gs" aria-label="Écouter la consigne">${gsvg('spk')}</button></div>${inner}${voiceHint()}</div>`);
+    const gvo=$('#gvo',o.el);if(gvo)gvo.onclick=()=>openVoices(voiceMap[g.step]);
     const gb=$('#gb',o.el);if(gb)gb.onclick=back;
     $('#gs',o.el).onclick=()=>{if(!playVoice(voiceMap[g.step]))toast('Voix non enregistrée')};
     window.scrollTo(0,0);
@@ -1459,36 +1568,60 @@ function openGuided(){
       shell(`<div class="gd-big" id="gv"></div><div class="gd-sub" id="gn"></div>${keypad(9)}`);
       bindKeys(9,()=>{$('#gv',o.el).textContent=g.buf?g.buf.replace(/(\d{2})(\d{0,3})(\d{0,2})(\d{0,2})/,(m,a,b,c,d)=>[a,b,c,d].filter(Boolean).join(' ')):'';const f=found();$('#gn',o.el).textContent=g.buf.length===9?(f?f.name:'Nouveau client'):''},()=>g.buf.length===9,async()=>{
         let c=found();g.phone=g.buf;
-        if(!c||c.incomplete||/^Client \d/.test(c.name||'')){g.newPhone=g.buf;g.exist=c||null;g.client=null;go('name');return}
+        if(!c){g.newPhone=g.buf;g.client=null;go('name');return}
         g.newPhone='';g.client=c;go('product');
       });
     }else if(st==='name'){
-      const can=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.MediaRecorder);
+      const hasSR=!!speechAPI(),canRec=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.MediaRecorder);
+      let recMode=!hasSR,mr=null;   // sans dictée automatique : on enregistre la voix du nom, le dirigeant l'écoutera
+      const baseNote=()=>recMode?(canRec?'Touche le micro et dis le nom du client. Ta voix sera gardée pour le dirigeant.':'Le micro ne marche pas ici. Écris le nom.'):'Touche le micro et dis le nom du client : il s\'écrit tout seul.';
       shell(`<div class="gd-sub">Nom du client</div><div class="gd-big" style="font-size:22px">${esc(phoneShow(g.newPhone))}</div>
-        ${can?`<button type="button" class="gd-ok" id="gm" style="background:#6b4cd6" aria-label="Micro">${gsvg('spk')}</button><div class="gd-sub" id="gmt">Touche le micro et dis le nom</div>`:''}
-        <input id="gnm" placeholder="Nom (facultatif)" autocomplete="off" style="font-size:20px;padding:14px;margin-top:10px">
-        <div class="gd-err" id="ge"></div><button type="button" class="gd-ok" id="go" aria-label="Valider">${gsvg('ok')}</button><button type="button" class="gd-no" id="gx">Passer, sans nom</button>`);
-      let cur=null,audio='';
-      const mic=$('#gm',o.el);
-      if(mic)mic.onclick=async()=>{
-        if(cur){cur.stop();return}
-        try{cur=await recordClip(6000);mic.style.background='#d6453d';$('#gmt',o.el).textContent='Je t\'écoute… touche encore pour finir';
-          cur.done.then(u=>{cur=null;mic.style.background='#6b4cd6';audio=u;$('#gmt',o.el).textContent=u?'Nom enregistré. Touche la coche verte.':'Trop court, recommence.';if(u)playData(u)})}
-        catch(e){$('#ge',o.el).textContent='Micro refusé. Autorise-le dans le navigateur.'}
+        <button type="button" class="gd-mic" id="gmic">${gsvg('mic')}<span id="gml">Dire le nom</span></button>
+        <div class="gd-sub" id="gnote" style="min-height:40px">${esc(baseNote())}</div>
+        <audio id="gau" controls style="width:100%" ${g.nameAudio?`src="${g.nameAudio}"`:'hidden'}></audio>
+        <input id="gnm" placeholder="Prénom et nom" autocomplete="off" autocapitalize="words" enterkeyhint="done" aria-label="Nom du client" style="font-size:22px;padding:16px">
+        <div class="gd-err" id="ge"></div>
+        <button type="button" class="gd-ok" id="go" aria-label="Valider">${gsvg('ok')}</button>
+        <button type="button" class="gd-no" id="gx">Passer, sans nom</button>
+        <div class="gd-sub" style="font-size:11px;opacity:.55">Version ${APP_VER}</div>`);
+      const mic=$('#gmic',o.el),inp=$('#gnm',o.el),err=m=>{$('#ge',o.el).textContent=m||''},note=t=>{$('#gnote',o.el).textContent=t},lbl=t=>{$('#gml',o.el).textContent=t};
+      // Dictée automatique : si le téléphone ne sait pas l'écouter, on passe à l'enregistrement de la voix.
+      mic.onfatal=()=>{recMode=true;note(baseNote());err('')};
+      async function recName(){
+        if(mr){try{mr.stop()}catch(e){}return}
+        if(!canRec){err('Le micro ne marche pas ici. Écris le nom.');return}
+        try{
+          const st=await navigator.mediaDevices.getUserMedia({audio:true});
+          const types=['audio/webm;codecs=opus','audio/mp4','audio/webm'];const mt=types.find(t=>window.MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t));
+          const r=new MediaRecorder(st,mt?{mimeType:mt,audioBitsPerSecond:24000}:{audioBitsPerSecond:24000});const ch=[];let tm;
+          r.ondataavailable=e=>{if(e.data&&e.data.size)ch.push(e.data)};
+          r.onstop=async()=>{
+            st.getTracks().forEach(t=>t.stop());clearTimeout(tm);mr=null;mic.classList.remove('rec');lbl('Dire le nom');
+            const blob=new Blob(ch,{type:r.mimeType||mt||'audio/webm'});
+            if(blob.size<800){err('Trop court. Touche le micro et dis le nom.');return}
+            if(blob.size>120000){err('Trop long. Dis seulement le nom.');return}
+            g.nameAudio=await new Promise(res=>{const f=new FileReader();f.onload=()=>res(f.result);f.readAsDataURL(blob)});
+            const au=$('#gau',o.el);if(au){au.src=g.nameAudio;au.hidden=false}
+            err('');note('Voix gardée. Touche la coche verte.');
+          };
+          r.start();mr=r;mic.classList.add('rec');lbl('Arrêter');err('');tm=setTimeout(()=>{try{r.stop()}catch(e){}},6000);
+        }catch(e){err('Micro refusé. Autorise-le dans les réglages du navigateur.')}
+      }
+      mic.onclick=()=>{if(recMode)recName();else listenName(mic,t=>{inp.value=t;err('');note('Nom écrit. Touche la coche verte, ou corrige-le.')},m=>err(m))};
+      inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#go',o.el).click()}};
+      const mk=async nm=>{
+        const id=uid('c');const name=nm||('Client '+phoneShow(g.newPhone));
+        const d={name,phone:g.newPhone,created:today(),agent:ME.id,incomplete:!nm};
+        if(!nm&&g.nameAudio)d.nameVoice=g.nameAudio;
+        try{await put('clients',id,d)}catch(e){err('Client non enregistré : '+String((e&&e.message)||e).slice(0,100));return}
+        g.client={id,...d};g.nameAudio='';go('product');
       };
-      const mk=async(nm,au)=>{
-        if(cur){cur.stop();await cur.done}
-        const ex=g.exist,name=nm||(ex&&ex.name)||('Client '+phoneShow(g.newPhone));
-        const d={...(ex?{...ex}:{}),name,phone:g.newPhone,created:(ex&&ex.created)||today(),agent:(ex&&ex.agent)||ME.id,incomplete:!nm};
-        delete d.id;if(au)d.nameAudio=au;
-        const id=ex?ex.id:uid('c');await put('clients',id,d);g.client={id,...d};go('product')};
-      $('#go',o.el).onclick=async()=>{const nm=val(o.el,'gnm').trim();if(cur){cur.stop();audio=await cur.done;cur=null}
-        if(!nm&&!audio){$('#ge',o.el).textContent='Dis le nom dans le micro, ou touche « Passer ».';return}mk(nm,audio)};
-      $('#gx',o.el).onclick=()=>mk('','');
+      $('#go',o.el).onclick=()=>{const nm=val(o.el,'gnm').trim();if(!nm&&!g.nameAudio){err('Dis le nom avec le micro, ou écris-le.');return}mk(nm)};
+      $('#gx',o.el).onclick=()=>mk('');
     }else if(st==='price'){
       const c=cat();
-      shell(`<div class="gd-sub">Prix de 1 ${esc(prod().name)}</div><div class="gd-big" id="gv">${fmtN(c)}</div><div class="gd-sub" id="gn" style="opacity:.8">Valide pour garder ce prix, ou tape un autre prix</div>${keypad(9)}`);
-      bindKeys(9,()=>{$('#gv',o.el).textContent=fmtN(g.buf?Number(g.buf):c);$('#gn',o.el).textContent=g.buf&&Number(g.buf)!==c?'Prix changé (normal : '+fmtN(c)+')':'Valide pour garder ce prix, ou tape un autre prix'},()=>!g.buf||Number(g.buf)>0,()=>{g.price=g.buf?Number(g.buf):0;next()});
+      shell(`<div class="gd-sub">Prix de 1 ${esc(prod().name)}</div><div class="gd-big" id="gv">${fmtN(c)}</div><div class="gd-sub" id="gn" style="opacity:.8">Écris le prix exact convenu avec le client, puis la coche verte</div>${keypad(9)}`);
+      bindKeys(9,()=>{$('#gv',o.el).textContent=fmtN(g.buf?Number(g.buf):c);$('#gn',o.el).textContent=g.buf&&Number(g.buf)!==c?'Prix changé (normal : '+fmtN(c)+')':'Écris le prix exact convenu avec le client, puis la coche verte'},()=>!g.buf||Number(g.buf)>0,()=>{g.price=g.buf?Number(g.buf):0;next()});
     }else if(st==='product'){
       const L=S.products.slice().sort((a,b)=>a.name.localeCompare(b.name));
       shell(`<div class="tiles">${L.map(p=>{const q=stockOf(p.id);return `<button type="button" class="tile ${q<=0?'dim':''}" data-p="${p.id}" ${q<=0?'disabled':''}>${p.img?`<img src="${p.img}" alt="">`:`<div class="tph" aria-hidden="true">${esc(p.name.trim().charAt(0).toUpperCase())}</div>`}<b>${fmtN(p.price)}</b><small>${esc(p.name)}</small></button>`}).join('')||'<div class="empty">Aucun produit. Le dirigeant doit en ajouter.</div>'}</div>`);
@@ -1529,10 +1662,10 @@ function openGuided(){
         if(!bk){const sf=S.staff.find(x=>x.name===g.seller);tel=sf&&sf.phone||'';if(!ME.isAdmin||!okTel(tel)){ge.textContent='Aucune facture ouverte. Appelle le dirigeant.';return}}
         btn.disabled=true;
         let slot;const sid=uid('s'),num_=nextNumber('V');
-        try{slot=await takePage(bk?bk.num:null,bk?bk.chief:g.seller,sid,tel,bk?bk.owner:(ME.id||''))}catch(e){ge.textContent='Pas de connexion ou facture indisponible. Réessaie.';btn.disabled=false;return}
+        try{slot=await takePage(bk?bk.num:null,bk?bk.chief:g.seller,sid,tel,bk?bk.owner:(ME.id||''))}catch(e){console.warn('takePage',e);ge.textContent=whyFail(e);btn.disabled=false;return}
         const date=today(),u=unit(),lines=[{productId:p.id,name:p.name,qty:g.qty,price:u,listPrice:cat()}];
         if(u!==cat())await logAct('Prix modifié','F'+slot.f+'P'+slot.p+' · '+p.name+' : '+fmtN(cat())+' → '+fmtN(u));
-        await put('sales',sid,{number:num_,date,clientId:g.client.id,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,pos:posNow(),seller:g.seller,lines,total:t,type:g.type,deposit:g.type==='credit'?g.dep:0,months:sch.length||0,schedule:sch,created:new Date().toISOString(),guided:true});
+        await put('sales',sid,{number:num_,date,clientId:g.client.id,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller:g.seller,lines,total:t,type:g.type,deposit:g.type==='credit'?g.dep:0,months:sch.length||0,schedule:sch,created:new Date().toISOString(),guided:true});
         if(payNow>0)await put('payments',uid('y'),{number:nextNumber('R'),saleId:sid,clientId:g.client.id,amount:payNow,kind:g.type==='credit'?'acompte':'comptant',method:g.method,ref:'',collector:ME.isAdmin?DIRECT:g.seller,date,time:new Date().toISOString(),agent:ME.id,byAdmin:ME.isAdmin});
         await put('moves',uid('m'),{productId:p.id,qty:-g.qty,type:'vente',date,note:num_,agent:ME.id});
         g.ref='F'+slot.f+'P'+slot.p;g.sid=sid;g.step='done';draw();playVoice('done');
@@ -1549,7 +1682,7 @@ function openSimpleSettings(){
   const o=sheet('Mode simple','',(el,o)=>{o.refresh=draw});
   function draw(){
     const names=staffNames(),cur=lsg(SELLER_KEY);
-    setBody(o,`<p class="note" style="margin-top:0">Pour les employés qui ne lisent pas : la vente se fait avec des photos, des chiffres et la voix du dirigeant en wolof.</p>
+    setBody(o,`<p class="note" style="margin-top:0">Version de l'application : ${APP_VER}.</p><p class="note">Pour les employés qui ne lisent pas : la vente se fait avec des photos, des chiffres et la voix du dirigeant en wolof.</p>
     <div class="card"><div class="tot"><span>Mode simple sur ce téléphone</span><b>${isSimple()?'Activé':'Désactivé'}</b></div>
     <div style="height:8px"></div><button class="btn" id="ts">${isSimple()?'Désactiver':'Activer'}</button></div>
     <label for="se">Employé qui utilise ce téléphone</label><select id="se"><option value="">Choisir…</option>${names.map(n=>`<option ${n===cur?'selected':''}>${esc(n)}</option>`).join('')}</select>
@@ -1590,256 +1723,6 @@ async function openAudit(){
   const lab={sales:'Vente',payments:'Paiement',invoices:'Facture',products:'Produit',costs:'Prix d\'achat',cancels:'Annulation',moves:'Stock',staff:'Employé',settings:'Réglage',expenses:'Dépense',remittances:'Remise',counts:'Comptage',clients:'Client',profiles:'Compte'};
   const sm=x=>{const d=x.old||{};return d.amount!=null?money(d.amount):d.total!=null?money(d.total):(d.name||'')};
   setBody(o,`<p class="note" style="margin-top:0">Chaque modification ou suppression est notée ici par la base et ne peut pas être effacée depuis l'application. Les 100 dernières.</p><div class="list">${L.map(x=>`<div class="row" style="cursor:default"><div class="l"><b>${x.op==='DELETE'?'Supprimé':'Modifié'} · ${esc(lab[x.col]||x.col||'')}</b><small>${new Date(x.at).toLocaleString('fr-FR')} · par ${esc(nm(x.uid))}</small></div><div class="r"><small>${esc(sm(x))}</small></div></div>`).join('')||'<div class="empty">Aucune trace pour le moment.</div>'}</div>`);
-}
-/* ========= Module Terrain : suivi GPS pendant le service, visites, trajets ========= */
-const GPS_ON=()=>!!window.SAP_STANDALONE&&!!navigator.geolocation;
-const TRK_DEF={start:'07:00',end:'19:00',autoClose:'20:00',interval:45,retention:60};
-const trkCfg=()=>({...TRK_DEF,...((S.settings.find(x=>x.id==='tracking')||{}))});
-const hm=iso=>{if(!iso)return'';const d=new Date(iso);return pad(d.getHours())+':'+pad(d.getMinutes())};
-const hmT=t=>hm(new Date(t).toISOString());
-function ago(t){const m=Math.round((Date.now()-t)/60000);return m<1?'à l\'instant':m<60?'il y a '+m+' min':m<1440?'il y a '+Math.floor(m/60)+' h '+pad(m%60):'il y a '+Math.floor(m/1440)+' j'}
-const myShift=()=>S.shifts.filter(s=>s.agent===ME.id&&!s.end).sort((a,b)=>b.start.localeCompare(a.start))[0];
-const TR={watch:null,wl:null,lastT:0,lastAcc:0,gps:'',buf:[],seq:0,sid:'',lastPush:0};
-const LSB='sap_trkbuf';
-function loadBuf(sid){try{const b=JSON.parse(localStorage.getItem(LSB)||'null');if(b&&b.sid===sid){TR.buf=b.buf||[];TR.seq=b.seq||0;return}}catch(e){}TR.buf=[];TR.seq=0}
-function saveBuf(){try{localStorage.setItem(LSB,JSON.stringify({sid:TR.sid,buf:TR.buf,seq:TR.seq}))}catch(e){}}
-function hav(a,b){const R=6371000,r=x=>x*Math.PI/180,dl=r(b[1]-a[1]),dg=r(b[2]-a[2]);const q=Math.sin(dl/2)**2+Math.cos(r(a[1]))*Math.cos(r(b[1]))*Math.sin(dg/2)**2;return 2*R*Math.asin(Math.sqrt(q))}
-// Distance estimée : points précis seulement, sauts impossibles et tremblements écartés.
-function trackDist(pts){let d=0,last=null;for(const p of pts){if(p[3]>80)continue;if(last){const dt=(p[0]-last[0])/1000,sg=hav(last,p);if(sg<15)continue;if(dt>0&&sg/dt>50)continue;d+=sg}last=p}return d}
-const fmtKm=m=>m>=1000?(m/1000).toFixed(1).replace('.',',')+' km':Math.round(m)+' m';
-
-async function flushTrack(force){
-  if(!TR.sid||!TR.buf.length)return;
-  if(!force&&TR.buf.length<8)return;
-  const pts=TR.buf.slice();TR.buf=[];const seq=TR.seq++;saveBuf();
-  try{await put('tracks',TR.sid+'_'+seq,{shiftId:TR.sid,agent:ME.id,seq,pts})}catch(e){TR.buf=pts.concat(TR.buf);TR.seq--;saveBuf()}
-}
-async function pushLast(extra){
-  const sh=myShift();if(!sh)return;
-  const o={...sh};delete o.id;Object.assign(o,extra||{});
-  try{await put('shifts',sh.id,o)}catch(e){}
-}
-function onPos(p){
-  const sh=myShift();if(!sh)return;
-  const t=p.timestamp||Date.now(),acc=Math.round(p.coords.accuracy||0),cfg=trkCfg();
-  if(TR.gps!=='ok'){TR.gps='ok'}
-  if(t-TR.lastT<cfg.interval*1000*0.8)return;
-  if(acc>100)return;
-  TR.lastT=t;TR.lastAcc=acc;
-  const pt=[t,+p.coords.latitude.toFixed(5),+p.coords.longitude.toFixed(5),acc];
-  TR.buf.push(pt);saveBuf();
-  pushLast({gps:'ok',last:{lat:pt[1],lng:pt[2],acc,t}});
-  flushTrack(false);rerender();
-}
-function onErr(e){
-  const g=e.code===1?'denied':'unavailable';TR.gps=g;pushLast({gps:g});rerender();
-}
-async function wake(){try{if(navigator.wakeLock&&!TR.wl){TR.wl=await navigator.wakeLock.request('screen');TR.wl.addEventListener('release',()=>{TR.wl=null})}}catch(e){}}
-function startWatch(){
-  stopWatch();TR.watch=navigator.geolocation.watchPosition(onPos,onErr,{enableHighAccuracy:true,maximumAge:5000,timeout:30000});wake();
-}
-function stopWatch(){if(TR.watch!=null){navigator.geolocation.clearWatch(TR.watch);TR.watch=null}if(TR.wl){try{TR.wl.release()}catch(e){}TR.wl=null}}
-function resumeShift(){
-  const sh=myShift();if(!sh||!GPS_ON()||ME.isAdmin)return;
-  if(TR.sid!==sh.id){TR.sid=sh.id;loadBuf(sh.id)}
-  if(!autoCloseCheck())startWatch();
-}
-async function endShift(auto){
-  const sh=myShift();if(!sh)return;
-  await flushTrack(true);
-  stopWatch();
-  const o={...sh};delete o.id;o.end=new Date().toISOString();o.gps='off';if(auto)o.autoClosed=true;
-  await put('shifts',sh.id,o);TR.sid='';TR.buf=[];saveBuf();
-  toast(auto?'Journée terminée automatiquement':'Journée terminée');rerender();
-}
-function autoCloseCheck(){
-  const sh=myShift();if(!sh)return false;
-  const cfg=trkCfg(),now=new Date(),lim=new Date(sh.start);const[h,m]=cfg.autoClose.split(':').map(Number);
-  lim.setHours(h,m,0,0);if(lim<new Date(sh.start))lim.setDate(lim.getDate()+1);
-  if(now>lim){endShift(true).then(()=>{try{alert('Votre journée a été terminée automatiquement à '+cfg.autoClose+'. Le suivi GPS est arrêté.')}catch(e){}});return true}
-  return false;
-}
-document.addEventListener('visibilitychange',()=>{
-  const sh=ME&&!ME.isAdmin&&window.SAP_STANDALONE&&myShift();if(!sh)return;
-  if(document.hidden){TR.gps='paused';pushLast({gps:'paused'})}
-  else{TR.gps='';resumeShift();rerender()}
-});
-setInterval(()=>{if(window.SAP_STANDALONE&&ME&&!ME.isAdmin&&myShift()){autoCloseCheck();if(!document.hidden&&tab==='home')rerender()}},60000);
-
-function gpsLine(sh){
-  const cfg=trkCfg();
-  if(TR.gps==='denied'||sh.gps==='denied')return['bad','GPS désactivé : autorisez la localisation dans le navigateur.'];
-  if(TR.gps==='unavailable'||sh.gps==='unavailable')return['warn','Position indisponible (signal GPS perdu).'];
-  if(document.hidden||TR.gps==='paused'||sh.gps==='paused')return['warn','GPS suspendu : gardez l\'application ouverte.'];
-  if(TR.lastT&&Date.now()-TR.lastT<cfg.interval*3000)return['ok','GPS actif · dernière position '+hmT(TR.lastT)+(queueInfo()?' · en attente d\'envoi':'')];
-  return['warn','GPS en recherche du signal…'];
-}
-const queueInfo=()=>{try{return(JSON.parse(localStorage.getItem('sap_queue')||'[]')).length>0}catch(e){return false}};
-function shiftCardHTML(){
-  if(!GPS_ON()||ME.isAdmin)return'';
-  const sh=myShift();
-  if(!sh)return`<div class="card" style="margin-top:12px"><div class="tot"><span>Ma journée</span><b>Non commencée</b></div><p class="note">Le suivi GPS démarre seulement quand vous commencez votre journée, et s'arrête quand vous la terminez.</p><button class="btn" id="sdy">Commencer ma journée</button></div>`;
-  const[k,t]=gpsLine(sh);
-  return`<div class="card" style="margin-top:12px"><div class="tot"><span>Journée commencée à ${hm(sh.start)}</span><span class="pill ${k}">${k==='ok'?'En service':'Attention'}</span></div><p class="note" style="margin-top:6px">${esc(t)}</p><button class="btn danger" id="sdy">Terminer ma journée</button></div>`;
-}
-function bindShift(v){
-  const b=$('#sdy',v);if(!b)return;
-  b.onclick=()=>{myShift()?endShift(false):startDay()};
-}
-function startDay(){
-  const cfg=trkCfg(),now=new Date(),cur=pad(now.getHours())+':'+pad(now.getMinutes());
-  if(cur<cfg.start||cur>cfg.end){toast('Hors des horaires de travail ('+cfg.start+' – '+cfg.end+')');return}
-  const o=sheet('Commencer ma journée',`<p class="note" style="margin-top:0"><b>Suivi GPS pendant le service</b></p>
-    <p class="note">Votre position est enregistrée environ toutes les ${cfg.interval} secondes, <b>seulement entre « Commencer ma journée » et « Terminer ma journée »</b>. Le directeur voit votre position et votre trajet de travail. Rien n'est enregistré hors service. Gardez l'application ouverte et l'écran allumé.</p>
-    <label style="display:flex;gap:10px;align-items:flex-start;margin-top:10px"><input type="checkbox" id="cs1" style="width:auto;margin-top:3px"><span>J'ai compris et j'accepte le suivi GPS pendant mes heures de service.</span></label>
-    <p class="note" id="serr" style="color:var(--bad)"></p><button class="btn" id="go">Commencer</button>`,(el)=>{
-    $('#go',el).onclick=()=>{
-      if(!$('#cs1',el).checked){$('#serr',el).textContent='Cochez la case pour continuer.';return}
-      $('#go',el).disabled=true;$('#serr',el).textContent='Recherche du signal GPS…';
-      navigator.geolocation.getCurrentPosition(async p=>{
-        const t=Date.now(),sid=uid('sh');
-        TR.sid=sid;TR.buf=[];TR.seq=0;TR.lastT=0;TR.gps='ok';saveBuf();
-        await put('shifts',sid,{agent:ME.id,name:ME.name||'',date:today(),start:new Date().toISOString(),gps:'ok',consent:true,last:{lat:+p.coords.latitude.toFixed(5),lng:+p.coords.longitude.toFixed(5),acc:Math.round(p.coords.accuracy||0),t}});
-        o.close();startWatch();toast('Bonne journée !');rerender();
-      },e=>{$('#go',el).disabled=false;$('#serr',el).textContent=e.code===1?'Localisation refusée. Autorisez-la dans les réglages du navigateur (cadenas de l\'adresse), puis réessayez.':'Signal GPS introuvable. Sortez à l\'air libre et réessayez.'},{enableHighAccuracy:true,timeout:20000,maximumAge:0});
-    };
-  });
-}
-// Position de travail au moment d'une vente ou d'une visite (seulement en service, et récente).
-function posNow(){const sh=window.SAP_STANDALONE&&!ME.isAdmin?myShift():null;if(!sh||!TR.lastT||Date.now()-TR.lastT>300000)return null;const l=TR.buf[TR.buf.length-1]||sh.last;return l?(Array.isArray(l)?{lat:l[1],lng:l[2],acc:l[3],t:l[0]}:l):null}
-
-/* ----- Visites ----- */
-const V_MOTIFS=['Prospection','Livraison','Recouvrement','Suivi','Autre'];
-const V_RES=['Visite effectuée','Client absent','Rendez-vous reporté','Vente réalisée','Paiement encaissé'];
-function openVisit(cid){
-  const c=byId(S.clients,cid);if(!c)return;
-  const on=GPS_ON()&&!ME.isAdmin&&!!myShift();
-  sheet('Visite · '+c.name,`<label for="vm" style="margin-top:0">Motif</label><select id="vm">${V_MOTIFS.map(x=>`<option>${x}</option>`).join('')}</select>
-    <label for="vr">Résultat</label><select id="vr">${V_RES.map(x=>`<option>${x}</option>`).join('')}</select>
-    <label for="vc">Commentaire (facultatif)</label><input id="vc" autocomplete="off">
-    <p class="note">${on?'Votre position GPS sera jointe à la visite.':'Vous n\'êtes pas en service : la visite est enregistrée sans position.'}</p>
-    <p class="note" id="verr" style="color:var(--bad)"></p><button class="btn" id="go">Enregistrer la visite</button>`,(el,o)=>{
-    $('#go',el).onclick=async()=>{
-      $('#go',el).disabled=true;
-      let pos=null;
-      if(on){pos=await new Promise(res=>navigator.geolocation.getCurrentPosition(p=>res({lat:+p.coords.latitude.toFixed(5),lng:+p.coords.longitude.toFixed(5),acc:Math.round(p.coords.accuracy||0),t:Date.now()}),()=>res(posNow()),{enableHighAccuracy:true,timeout:8000,maximumAge:20000}))}
-      await put('visits',uid('v'),{clientId:cid,agent:ME.id,byAdmin:ME.isAdmin,t:new Date().toISOString(),date:today(),motive:val(el,'vm'),result:val(el,'vr'),comment:val(el,'vc').trim(),...(pos?{lat:pos.lat,lng:pos.lng,acc:pos.acc}:{}),onShift:on});
-      toast('Visite enregistrée');o.close();
-    };
-  });
-}
-
-/* ----- Tableau Terrain du directeur ----- */
-function agentList(){const ids=new Set([...Object.keys(PROF).filter(i=>PROF[i].role!=='admin'&&PROF[i].active!==false),...S.shifts.map(s=>s.agent)]);return[...ids].filter(i=>i!==ME.id)}
-function agentStatus(id){
-  const cfg=trkCfg(),sh=S.shifts.filter(s=>s.agent===id).sort((a,b)=>b.start.localeCompare(a.start))[0];
-  if(!sh)return{k:'off',label:'Hors service',sh:null};
-  const last=sh.last;
-  if(sh.end)return{k:'off',label:'Hors service',sh,last,ended:true};
-  if(sh.gps==='denied')return{k:'bad',label:'GPS désactivé',sh,last};
-  if(sh.gps==='unavailable')return{k:'warn',label:'Position indisponible',sh,last};
-  const fresh=last&&Date.now()-last.t<=Math.max(cfg.interval*3000,150000);
-  if(fresh&&sh.gps!=='paused')return{k:'ok',label:'En service',sh,last,fresh:true};
-  return{k:'warn',label:sh.gps==='paused'?'Hors ligne (application en arrière-plan)':'Hors ligne',sh,last};
-}
-let LEAF=null;
-function loadLeaflet(){
-  if(window.L)return Promise.resolve(true);
-  if(LEAF)return LEAF;
-  LEAF=new Promise(res=>{
-    const css=document.createElement('link');css.rel='stylesheet';css.href='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css';document.head.appendChild(css);
-    const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js';s.onload=()=>res(!!window.L);s.onerror=()=>{LEAF=null;res(false)};document.head.appendChild(s);
-  });
-  return LEAF;
-}
-const KCOL={ok:'#1f9d55',warn:'#e08a00',bad:'#d6453d',off:'#8a8fa3'};
-function openTerrain(){
-  let map=null,layer=null,iv=null,fAgent='';
-  const o=sheet('Terrain','',(el,o)=>{o.refresh=draw});
-  setBody(o,`<p class="note" style="margin-top:0">Positions seulement pendant le service. Une position ancienne est toujours affichée avec son heure : « dernière position connue ».</p>
-    <div id="tmap" style="height:280px;border-radius:14px;overflow:hidden;background:#dfe3ee;margin-bottom:10px"></div><div id="tl"></div>
-    <button class="btn sec2" id="tset" style="margin-top:12px">Horaires et paramètres du suivi</button>`);
-  $('#tset',o.el).onclick=openTrkSettings;
-  const close0=o.close;o.close=()=>{clearInterval(iv);close0()};
-  iv=setInterval(()=>{if(!o.el.isConnected){clearInterval(iv);return}draw()},30000);
-  loadLeaflet().then(ok=>{if(!ok){$('#tmap',o.el).innerHTML='<div class="empty" style="padding:90px 12px">Carte indisponible (pas de connexion). La liste ci-dessous reste valable.</div>';return}
-    map=L.map($('#tmap',o.el),{zoomControl:true}).setView([14.7167,-17.4677],11);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
-    layer=L.layerGroup().addTo(map);draw(true)});
-  function draw(fit){
-    const A=agentList(),st=A.map(id=>({id,...agentStatus(id)}));
-    if(map&&layer){layer.clearLayers();const bs=[];
-      st.forEach(a=>{if(!a.last)return;const stale=!a.fresh;const m=L.circleMarker([a.last.lat,a.last.lng],{radius:stale?9:11,color:'#fff',weight:2,fillColor:KCOL[a.k],fillOpacity:stale?.55:1}).addTo(layer);
-        m.bindTooltip(ownerName(a.id)+' · '+(stale?'dernière position connue ':'position ')+hmT(a.last.t),{permanent:true,direction:'top',offset:[0,-8]});bs.push([a.last.lat,a.last.lng])});
-      if(fit&&bs.length)map.fitBounds(bs,{padding:[30,30],maxZoom:16});setTimeout(()=>map.invalidateSize(),50)}
-    $('#tl',o.el).innerHTML=A.length?st.map(a=>`<div class="row" data-ag="${a.id}"><div class="l"><b>${esc(ownerName(a.id))}${ownerZone(a.id)?' · '+esc(ownerZone(a.id)):''}</b><small>${a.last?(a.fresh?'Position à '+hmT(a.last.t)+' ('+ago(a.last.t)+')':'Dernière position connue : '+fdate(new Date(a.last.t).toISOString())+' '+hmT(a.last.t)):'Aucune position'}${a.sh&&!a.ended?' · journée depuis '+hm(a.sh.start):''}</small></div><div class="r"><span class="pill ${a.k==='off'?'':a.k}" style="${a.k==='off'?'background:#e6e8f0;color:#555':''}">${esc(a.label)}</span></div></div>`).join(''):'<div class="empty">Aucun agent pour le moment.</div>';
-    o.el.querySelectorAll('[data-ag]').forEach(r=>r.onclick=()=>openAgentDay(r.dataset.ag));
-  }
-  draw();
-}
-async function fetchTracks(shiftIds){
-  try{const d=await claude.use('db');if(d&&d.fetchTracks)return await d.fetchTracks(shiftIds)}catch(e){}
-  return[];
-}
-function openAgentDay(id){
-  let from=today(),to=today();
-  const o=sheet(ownerName(id),'',()=>{});
-  let map=null,layer=null;
-  async function draw(){
-    const shs=S.shifts.filter(s=>s.agent===id&&s.date>=from&&s.date<=to).sort((a,b)=>a.start.localeCompare(b.start));
-    const trk=await fetchTracks(shs.map(s=>s.id));
-    const pts=sid=>trk.filter(x=>x.shiftId===sid).sort((a,b)=>a.seq-b.seq).flatMap(x=>x.pts).sort((a,b)=>a[0]-b[0]);
-    const V=S.visits.filter(v=>v.agent===id&&v.date>=from&&v.date<=to).sort((a,b)=>a.t.localeCompare(b.t));
-    const sales=S.sales.filter(s=>s.agent===id&&s.date>=from&&s.date<=to&&!isCancelled(s));
-    const P=pays().filter(p=>p.agent===id&&p.status!=='annulé'&&p.date.slice(0,10)>=from&&p.date.slice(0,10)<=to);
-    let dist=0;const gaps=[];
-    shs.forEach(s=>{const p=pts(s.id);dist+=trackDist(p);for(let i=1;i<p.length;i++)if(p[i][0]-p[i-1][0]>300000)gaps.push([p[i-1][0],p[i][0]]);
-      if(!s.end&&p.length&&Date.now()-p[p.length-1][0]>300000)gaps.push([p[p.length-1][0],Date.now()])});
-    const dur=s=>{const e=s.end?new Date(s.end):new Date(),m=Math.round((e-new Date(s.start))/60000);return Math.floor(m/60)+' h '+pad(m%60)};
-    setBody(o,`<div class="grid2"><div><label for="af" style="margin-top:0">Du</label><input id="af" type="date" value="${from}"></div><div><label for="at">Au</label><input id="at" type="date" value="${to}"></div></div>
-      <div class="kpis" style="margin-top:12px"><div class="kpi"><small>Ventes</small><b>${sales.length}</b><small>${money(sales.reduce((a,s)=>a+s.total,0))}</small></div><div class="kpi"><small>Encaissé</small><b>${P.length}</b><small>${money(P.reduce((a,p)=>a+p.amount,0))}</small></div><div class="kpi"><small>Visites</small><b>${V.length}</b><small>enregistrées</small></div><div class="kpi"><small>Distance estimée</small><b>${fmtKm(dist)}</b><small>trajets en service</small></div></div>
-      <div id="amap" style="height:240px;border-radius:14px;overflow:hidden;background:#dfe3ee;margin:12px 0"></div>
-      <div class="sec"><h2>Journées de travail</h2><span>${shs.length}</span></div>
-      <div class="list">${shs.map(s=>`<div class="row" style="cursor:default"><div class="l"><b>${fdate(s.date)} · ${hm(s.start)} → ${s.end?hm(s.end):'en cours'}</b><small>Durée ${dur(s)}${s.autoClosed?' · fermée automatiquement':''}</small></div></div>`).join('')||'<div class="empty">Aucune journée sur cette période.</div>'}</div>
-      ${gaps.length?`<div class="sec"><h2>Périodes sans données</h2><span>${gaps.length}</span></div><div class="list">${gaps.map(g=>`<div class="row" style="cursor:default"><div class="l"><b>${hmT(g[0])} → ${hmT(g[1])}</b><small>Suivi interrompu (écran éteint, signal ou réseau)</small></div></div>`).join('')}</div>`:''}
-      <div class="sec"><h2>Visites</h2><span>${V.length}</span></div>
-      <div class="list">${V.map(v=>{const c=byId(S.clients,v.clientId);return`<div class="row" style="cursor:default"><div class="l"><b>${hm(v.t)} · ${esc(c?c.name:'Client')}</b><small>${esc(v.motive)} · ${esc(v.result)}${v.comment?' · '+esc(v.comment):''}${v.lat?'':' · sans position'}</small></div></div>`}).join('')||'<div class="empty">Aucune visite.</div>'}</div>
-      <button class="btn sec2" id="aex" style="margin-top:12px">Exporter (Excel)</button>`);
-    $('#af',o.el).onchange=e=>{from=e.target.value||from;if(to<from)to=from;draw()};
-    $('#at',o.el).onchange=e=>{to=e.target.value||to;if(to<from)from=to;draw()};
-    $('#aex',o.el).onclick=()=>{
-      const rows=[['Type','Date','Heure','Détail','Latitude','Longitude','Précision (m)']];
-      shs.forEach(s=>rows.push(['Journée',s.date,hm(s.start),'Début',..._pos(s.last)]),);
-      shs.filter(s=>s.end).forEach(s=>rows.push(['Journée',s.date,hm(s.end),'Fin'+(s.autoClosed?' (automatique)':''),'','','']));
-      V.forEach(v=>rows.push(['Visite',v.date,hm(v.t),(byId(S.clients,v.clientId)||{}).name+' · '+v.motive+' · '+v.result,v.lat||'',v.lng||'',v.acc||'']));
-      rows.push(['Distance estimée',from+' → '+to,'',fmtKm(dist),'','','']);
-      saveFile('terrain-'+ownerName(id).replace(/\s+/g,'_')+'-'+from+'.csv',toCSV(rows));
-    };
-    const ok=await loadLeaflet();const mp=$('#amap',o.el);
-    if(mp&&!ok){mp.innerHTML='<div class="empty" style="padding:90px 12px">Carte indisponible (pas de connexion).</div>';return}
-    if(!ok||!mp)return;
-    if(map){map.remove();map=null}
-    map=L.map(mp).setView([14.7167,-17.4677],11);L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
-    const bs=[];
-    shs.forEach(s=>{const p=pts(s.id).filter(x=>x[3]<=80);if(p.length>1){L.polyline(p.map(x=>[x[1],x[2]]),{color:'#6b4cd6',weight:4,opacity:.8}).addTo(map);p.forEach(x=>bs.push([x[1],x[2]]))}});
-    V.filter(v=>v.lat).forEach(v=>{L.circleMarker([v.lat,v.lng],{radius:7,color:'#fff',weight:2,fillColor:'#e08a00',fillOpacity:1}).addTo(map).bindTooltip(hm(v.t)+' '+((byId(S.clients,v.clientId)||{}).name||''));bs.push([v.lat,v.lng])});
-    if(bs.length)map.fitBounds(bs,{padding:[24,24],maxZoom:17});setTimeout(()=>map.invalidateSize(),60);
-  }
-  const _pos=l=>l?[l.lat,l.lng,l.acc]:['','',''];
-  draw();
-}
-function openTrkSettings(){
-  const c=trkCfg();
-  sheet('Paramètres du suivi',`<p class="note" style="margin-top:0">Le suivi ne marche que pendant le service. Un agent ne peut pas commencer sa journée hors de ces horaires.</p>
-    <div class="grid2"><div><label for="ts1">Début possible dès</label><input id="ts1" type="time" value="${c.start}"></div><div><label for="ts2">Début possible jusqu'à</label><input id="ts2" type="time" value="${c.end}"></div></div>
-    <label for="ts3">Fermeture automatique d'une journée oubliée à</label><input id="ts3" type="time" value="${c.autoClose}">
-    <div class="grid2"><div><label for="ts4">Position toutes les (secondes)</label><input id="ts4" inputmode="numeric" value="${c.interval}"></div><div><label for="ts5">Garder les positions (jours)</label><input id="ts5" inputmode="numeric" value="${c.retention}"></div></div>
-    <p class="note" id="terr" style="color:var(--bad)"></p><button class="btn" id="ok">Enregistrer</button>
-    <button class="btn danger" id="pg" style="margin-top:14px">Supprimer maintenant les positions trop anciennes</button>`,(el,o)=>{
-    $('#ok',el).onclick=async()=>{const iv=num(el,'ts4'),rt=num(el,'ts5');if(iv<20||iv>300){$('#terr',el).textContent='Intervalle : entre 20 et 300 secondes.';return}if(rt<7){$('#terr',el).textContent='Conservation : 7 jours au minimum.';return}
-      await put('settings','tracking',{start:val(el,'ts1'),end:val(el,'ts2'),autoClose:val(el,'ts3'),interval:iv,retention:rt});toast('Paramètres enregistrés');o.close()};
-    $('#pg',el).onclick=async()=>{try{const u=await claude.use('user');const n=await u.purge(trkCfg().retention);toast(n+' groupe(s) de positions supprimé(s)')}catch(e){$('#terr',el).textContent='Suppression impossible : '+(e&&e.message||'erreur')}};
-  });
 }
 
 /* ========= Documents : reçu, facture, partage ========= */
