@@ -1,0 +1,245 @@
+name: Fabriquer l'application Android (APK)
+
+# Lancement manuel : onglet Actions > « Fabriquer l'application Android (APK) » > Run workflow.
+# Ce fichier contient tout le projet Android : rien d'autre à ajouter dans le dépôt.
+on:
+  workflow_dispatch:
+    inputs:
+      site_url:
+        description: "Adresse de l'application (GitHub Pages), avec le / final"
+        default: "https://senafterpay-sn.github.io/SenAfterPay-/"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Écrire le projet
+        run: |
+          mkdir -p android-app/www android-app/native
+          cd android-app
+          cat > package.json <<'SAP_EOF'
+          {
+            "name": "senafterpay-android",
+            "version": "1.0.0",
+            "private": true,
+            "description": "Coque Android de SenAfterPay (suivi GPS en arrière-plan et pas)",
+            "dependencies": {
+              "@capacitor/android": "6.2.1",
+              "@capacitor/cli": "6.2.1",
+              "@capacitor/core": "6.2.1",
+              "@capacitor-community/background-geolocation": "1.2.26"
+            }
+          }
+          SAP_EOF
+          cat > capacitor.config.json <<'SAP_EOF'
+          {
+            "appId": "sn.senafterpay.app",
+            "appName": "SenAfterPay",
+            "webDir": "www",
+            "server": {
+              "url": "__SITE__",
+              "androidScheme": "https",
+              "allowNavigation": ["senafterpay-sn.github.io", "*.supabase.co"]
+            },
+            "android": { "allowMixedContent": false }
+          }
+          SAP_EOF
+          cat > www/index.html <<'SAP_EOF'
+          <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SenAfterPay</title><body style="font-family:sans-serif;text-align:center;padding:40px">Chargement de SenAfterPay…<br><small>Connexion Internet requise au premier lancement.</small></body>
+          SAP_EOF
+          cat > setup.sh <<'SAP_EOF'
+          #!/usr/bin/env bash
+          # Prépare le projet Android : à lancer dans le dossier android-app (npm install déjà fait).
+          set -e
+          [ -d android ] || npx cap add android
+          python3 patch.py
+          npx cap sync android
+          SAP_EOF
+          cat > patch.py <<'SAP_EOF'
+          """Ajoute au projet Android généré par Capacitor : permissions, capteur de pas, MainActivity."""
+          import re, shutil, pathlib
+          root = pathlib.Path(__file__).parent / 'android' / 'app' / 'src' / 'main'
+          java = root / 'java' / 'sn' / 'senafterpay' / 'app'
+          for f in ('StepCounterPlugin.java', 'MainActivity.java'):
+              shutil.copy(pathlib.Path(__file__).parent / 'native' / f, java / f)
+          mf = root / 'AndroidManifest.xml'
+          t = mf.read_text(encoding='utf-8')
+          extra = '''
+              <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
+          '''
+          if 'ACTIVITY_RECOGNITION' not in t:
+              t = t.replace('</manifest>', extra + '</manifest>')
+          mf.write_text(t, encoding='utf-8')
+          print('patch OK')
+          SAP_EOF
+          cat > native/StepCounterPlugin.java <<'SAP_EOF'
+          package sn.senafterpay.app;
+
+          import android.Manifest;
+          import android.content.Context;
+          import android.hardware.Sensor;
+          import android.hardware.SensorEvent;
+          import android.hardware.SensorEventListener;
+          import android.hardware.SensorManager;
+          import android.os.Build;
+
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.PermissionState;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+          import com.getcapacitor.annotation.Permission;
+          import com.getcapacitor.annotation.PermissionCallback;
+
+          /**
+           * Compte les pas avec le capteur matériel TYPE_STEP_COUNTER du téléphone.
+           * Le capteur donne un total depuis le dernier redémarrage ; on garde donc une base
+           * pour compter uniquement les pas faits depuis start(), et on gère un redémarrage du téléphone.
+           * Si le téléphone n'a pas ce capteur, isAvailable() renvoie false et l'application affiche
+           * « Nombre de pas indisponible ».
+           */
+          @CapacitorPlugin(
+              name = "StepCounter",
+              permissions = { @Permission(alias = "activity", strings = { Manifest.permission.ACTIVITY_RECOGNITION }) }
+          )
+          public class StepCounterPlugin extends Plugin implements SensorEventListener {
+              private SensorManager manager;
+              private Sensor sensor;
+              private boolean running = false;
+              private float base = -1f;
+              private float current = 0f;
+              private float offset = 0f;
+
+              private Sensor findSensor() {
+                  if (sensor == null) {
+                      manager = (SensorManager) getContext().getSystemService(Context.SENSOR_SERVICE);
+                      if (manager != null) sensor = manager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
+                  }
+                  return sensor;
+              }
+
+              @PluginMethod
+              public void isAvailable(PluginCall call) {
+                  JSObject r = new JSObject();
+                  r.put("available", findSensor() != null);
+                  call.resolve(r);
+              }
+
+              @PluginMethod
+              public void requestPermission(PluginCall call) {
+                  if (Build.VERSION.SDK_INT < 29 || getPermissionState("activity") == PermissionState.GRANTED) {
+                      JSObject r = new JSObject();
+                      r.put("granted", true);
+                      call.resolve(r);
+                  } else {
+                      requestPermissionForAlias("activity", call, "permissionResult");
+                  }
+              }
+
+              @PermissionCallback
+              private void permissionResult(PluginCall call) {
+                  JSObject r = new JSObject();
+                  r.put("granted", getPermissionState("activity") == PermissionState.GRANTED);
+                  call.resolve(r);
+              }
+
+              @PluginMethod
+              public void start(PluginCall call) {
+                  if (findSensor() == null) {
+                      call.reject("Capteur de pas indisponible");
+                      return;
+                  }
+                  if (!running) {
+                      base = -1f;
+                      current = 0f;
+                      offset = 0f;
+                      running = manager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL);
+                  }
+                  JSObject r = new JSObject();
+                  r.put("running", running);
+                  call.resolve(r);
+              }
+
+              @PluginMethod
+              public void stop(PluginCall call) {
+                  if (running && manager != null) manager.unregisterListener(this);
+                  running = false;
+                  call.resolve();
+              }
+
+              @PluginMethod
+              public void getSteps(PluginCall call) {
+                  JSObject r = new JSObject();
+                  r.put("steps", Math.round(offset + current));
+                  r.put("running", running);
+                  call.resolve(r);
+              }
+
+              @Override
+              public void onSensorChanged(SensorEvent event) {
+                  float v = event.values[0];
+                  if (base < 0f) base = v;
+                  if (v < base) { // le téléphone a redémarré : le compteur est reparti de zéro
+                      offset += current;
+                      base = v;
+                  }
+                  current = v - base;
+              }
+
+              @Override
+              public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+          }
+          SAP_EOF
+          cat > native/MainActivity.java <<'SAP_EOF'
+          package sn.senafterpay.app;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  registerPlugin(StepCounterPlugin.class);
+                  super.onCreate(savedInstanceState);
+              }
+          }
+          SAP_EOF
+          sed -i "s|__SITE__|${{ inputs.site_url }}|" capacitor.config.json
+      - name: Préparer Android
+        working-directory: android-app
+        run: |
+          npm install --no-audit --no-fund
+          bash setup.sh
+      - name: Compiler l'APK
+        working-directory: android-app/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Nommer le fichier
+        run: cp android-app/android/app/build/outputs/apk/debug/app-debug.apk SenAfterPay.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SenAfterPay-apk
+          path: SenAfterPay.apk
+      - name: Publier dans « Releases »
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-${{ github.run_number }}
+          name: Application Android ${{ github.run_number }}
+          files: SenAfterPay.apk
+          
