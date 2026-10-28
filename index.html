@@ -52,6 +52,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .dc{display:flex;flex-direction:column;gap:6px}
 .acts{display:flex;gap:8px;flex-wrap:wrap}
 .acts a,.acts button{flex:1;min-width:76px;border:0;cursor:pointer;text-align:center;text-decoration:none;padding:10px 8px;border-radius:10px;font:700 13px var(--f-body);background:var(--accent-soft);color:var(--accent)}
+.acts button.hd{background:var(--line);color:var(--mute);flex:0 0 auto}
 .acts a.wa,.acts button.wa{background:var(--ok-soft);color:var(--ok)}
 .chart{width:100%;height:auto;display:block} .chart text{fill:var(--mute);font:11px var(--f-body)} .chart .bar-r{fill:var(--accent)} .chart line{stroke:var(--line)}
 .dates{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
@@ -1256,14 +1257,16 @@ function staffBlock(ms){
   <div class="card scroll"><table class="tbl"><thead><tr><th>Employé</th><th class="n">Ventes</th><th class="n">Montant</th></tr></thead><tbody>${L.length?L.map(([k,v])=>`<tr><td>${esc(k)}</td><td class="n">${v.n}</td><td class="n">${money(v.t)}</td></tr>`).join(''):'<tr><td colspan="3">Aucune vente ce mois-ci.</td></tr>'}</tbody></table></div>
   <button class="btn line" style="margin-top:10px" data-act="staff">Gérer les employés</button>`;
 }
+const hiddenDue=e=>S.reminders.some(r=>r.hidden&&r.saleId===e.sale.id&&r.n===e.n);
 function dueActs(e){
   const cl=e.client,d=daysUntil(e.due,today());
   const ph=phoneIntl(cl&&cl.phone),txt=encodeURIComponent(reminderText(e)),k=e.sale.id+'|'+e.n;
   const rm=S.reminders.find(x=>x.id===e.sale.id+'_'+e.n);
+  const isH=hiddenDue(e),hb=`<button type="button" class="hd" data-hide="${e.sale.id}|${e.n}|${isH?0:1}">${isH?'Rétablir':'Masquer'}</button>`;
   const chan={tel:'appel',sms:'SMS',wa:'WhatsApp',copy:'contact'};
-  if(!ph)return '<p class="note" style="margin:6px 0 0">Aucun numéro valide pour ce client : ajoutez-le sur sa fiche pour pouvoir l\'appeler ou lui écrire.</p>';
+  if(!ph)return '<div class="acts">'+hb+'</div><p class="note" style="margin:6px 0 0">Aucun numéro valide pour ce client : ajoutez-le sur sa fiche pour pouvoir l\'appeler ou lui écrire.</p>';
   const state=d<0?'En retard de '+(-d)+' jour(s)':d===0?"Paiement prévu aujourd'hui":d<=5?'Rappel à envoyer : dans '+d+' jour(s)':'';
-  return `<div class="acts"><a href="tel:+${ph}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|tel">Appeler</a><a href="sms:+${ph}?body=${txt}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|sms">SMS</a><a class="wa" href="https://wa.me/${ph}?text=${txt}" target="_blank" rel="noopener" data-rem="${k}|wa">WhatsApp</a><button type="button" data-copy="${esc((cl?cl.name:'')+' '+ref(e.sale)+' +'+ph)}">Contact</button></div>${rm?`<p class="note" style="margin:0">Rappel envoyé le ${fdate(rm.at)} (${chan[rm.channel]||rm.channel})</p>`:(state?`<p class="note" style="margin:0">${state}</p>`:'')}`;
+  return `<div class="acts"><a href="tel:+${ph}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|tel">Appeler</a><a href="sms:+${ph}?body=${txt}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|sms">SMS</a><a class="wa" href="https://wa.me/${ph}?text=${txt}" target="_blank" rel="noopener" data-rem="${k}|wa">WhatsApp</a><button type="button" data-copy="${esc((cl?cl.name:'')+' '+ref(e.sale)+' +'+ph)}">Contact</button>${hb}</div>${rm?`<p class="note" style="margin:0">Rappel envoyé le ${fdate(rm.at)} (${chan[rm.channel]||rm.channel})</p>`:(state?`<p class="note" style="margin:0">${state}</p>`:'')}`;
 }
 function dueRow(e,showDate){
   const[c,l]=dueTag(e.status),cl=e.client;
@@ -1289,12 +1292,13 @@ function dayLabel(d,now){
   return{t,tag};
 }
 function vDue(v){
-  const now=today();let D=dueList();
-  const f={late:e=>e.status==='retard',today:e=>e.status==='aujourdhui',soon:e=>{const d=daysUntil(e.due,now);return d>=0&&d<=5},next:e=>e.status==='avenir'}[dueF];
+  const now=today();let D=dueList();const nHid=D.filter(hiddenDue).length;
+  D=dueF==='hid'?D.filter(hiddenDue):D.filter(e=>!hiddenDue(e));
+  const f={hid:null,late:e=>e.status==='retard',today:e=>e.status==='aujourdhui',soon:e=>{const d=daysUntil(e.due,now);return d>=0&&d<=5},next:e=>e.status==='avenir'}[dueF];
   if(f)D=D.filter(f);
   const days=[...new Set(D.map(e=>e.due))].sort();
-  const chips=[['all','Tout'],['late','Retards'],['soon','5 jours'],['next','À venir']];
-  const nSoon=dueList().filter(e=>{const d=daysUntil(e.due,now);return d>=0&&d<=5}).length;
+  const chips=[['all','Tout'],['late','Retards'],['soon','5 jours'],['next','À venir']].concat(nHid||dueF==='hid'?[['hid','Masqués ('+nHid+')']]:[]);
+  const nSoon=dueList().filter(e=>!hiddenDue(e)).filter(e=>{const d=daysUntil(e.due,now);return d>=0&&d<=5}).length;
   const done=allSales().filter(x=>x.s.type==='credit'&&x.st.status==='soldée');
   v.innerHTML=`<div class="sec"><h2>Échéances</h2><span>${D.length} · ${money(D.reduce((a,e)=>a+e.balance,0))}</span></div>
   ${nSoon&&dueF!=='soon'?`<button type="button" class="btn" id="goSoon" style="width:100%;margin-bottom:10px">${nSoon} rappel${nSoon>1?'s':''} à envoyer (5 jours)</button>`:''}
@@ -2308,6 +2312,21 @@ async function makePDF(el,name,html){
     toast('PDF indisponible, enregistrement du fichier…');saveFile(name.replace('.pdf','.html'),html);
   }
 }
+async function makeImage(el,name){
+  try{
+    toast('Création de l\'image…');
+    const LB=window.SAP_LIBS||{};await loadJS(LB.h2c||'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+    const cv=await html2canvas(el,{scale:2,backgroundColor:'#ffffff',useCORS:true});
+    const blob=await new Promise(r=>cv.toBlob(r,'image/png'));
+    if(!blob)throw new Error('vide');
+    const file=new File([blob],name,{type:'image/png'});
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      try{await navigator.share({files:[file],title:name});return}catch(e){if(e&&e.name==='AbortError')return}
+    }
+    const d=await claude.use('downloads');if(!d)throw new Error('nodl');
+    await d.save({filename:name,data:blob});toast('Image enregistrée : vous pouvez la joindre dans WhatsApp');
+  }catch(e){if(e&&e.code==='declined')return;toast('Image indisponible sur ce téléphone')}
+}
 function openInvoice(sid){
   const s=byId(S.sales,sid),c=byId(S.clients,s.clientId),st=saleState(s,pays(),today());
   const doc=()=>docHTML('Facture '+ref(s),invoiceHTML(s,c,st));
@@ -2318,8 +2337,9 @@ function openInvoice(sid){
     <label for="fc">Chef de facture</label><select id="fc"><option value="">Choisir…</option>${names.map(n=>`<option ${n===bk.chief?'selected':''}>${esc(n)}</option>`).join('')}</select>
     <label for="ft">Téléphone du chef (obligatoire)</label><input id="ft" inputmode="tel" value="${esc(chiefTelOf(s.fnum,ow(s)))}" placeholder="77 123 45 67">
     <p class="note" id="ferr" style="color:var(--bad)"></p><button class="btn" id="fs">Enregistrer et mettre à jour la facture</button></div>`:'';
-  const o=sheet('Facture '+ref(s),fix+invoiceHTML(s,c,st)+`<div style="display:flex;gap:8px;margin-top:12px"><button class="btn" id="pr">Imprimer / PDF</button><a class="btn sec2" id="wa" style="text-align:center;text-decoration:none" target="_blank" rel="noopener" href="${waLink(c,invoiceText(s,c,st))}">WhatsApp</a></div><p class="note">WhatsApp envoie le détail de la facture au client. Pour joindre la facture elle-même, touchez « Imprimer / PDF » : le PDF est enregistré sur votre téléphone, vous pouvez l'imprimer ou le joindre dans WhatsApp.</p>`,(el)=>{
+  const o=sheet('Facture '+ref(s),fix+invoiceHTML(s,c,st)+`<div style="display:flex;gap:8px;margin-top:12px"><button class="btn" id="pr">Imprimer / PDF</button><button class="btn sec2" id="pi">Envoyer en image</button><a class="btn sec2" id="wa" style="text-align:center;text-decoration:none" target="_blank" rel="noopener" href="${waLink(c,invoiceText(s,c,st))}">WhatsApp</a></div><p class="note">WhatsApp envoie le détail de la facture au client. « Envoyer en image » partage la facture sous forme de photo (WhatsApp, etc.). « Imprimer / PDF » enregistre un PDF : il est enregistré sur votre téléphone, vous pouvez l'imprimer ou le joindre dans WhatsApp.</p>`,(el)=>{
     $('#pr',el).onclick=()=>makePDF($('.fx',el),'facture-'+ref(s)+'.pdf',doc());
+    $('#pi',el).onclick=()=>makeImage($('.fx',el),'facture-'+ref(s)+'.png');
     const fs=$('#fs',el);
     if(fs)fs.onclick=async()=>{const nm=val(el,'fc'),t=val(el,'ft').trim();
       if(!nm){$('#ferr',el).textContent='Choisissez le chef de facture.';return}
@@ -2498,6 +2518,8 @@ document.addEventListener('click',e=>{
     if(!window.SAP_STANDALONE&&(ch==='tel'||ch==='sms')){const num=(r.getAttribute('href')||'').replace(/^(tel|sms):/,'').split('?')[0];
       (async()=>{try{await navigator.clipboard.writeText(num)}catch(_){const i=document.createElement('input');i.value=num;document.body.appendChild(i);i.select();try{document.execCommand('copy')}catch(__){}i.remove()}
         toast((ch==='tel'?'Appel : ':'SMS : ')+num+' (numéro copié). Si rien ne s\'ouvre, collez-le dans l\'application Téléphone.')})()}}
+  const hd=e.target.closest('[data-hide]');
+  if(hd){e.preventDefault();e.stopPropagation();const[sid,n,fl]=hd.dataset.hide.split('|');hd.disabled=true;put('reminders','h_'+sid+'_'+n,{saleId:sid,n:Number(n),hidden:fl==='1',at:new Date().toISOString(),by:ME.id||''}).then(()=>toast(fl==='1'?'Échéance masquée (onglet « Masqués »)':'Échéance rétablie')).catch(x=>{hd.disabled=false;alert('Non enregistré : '+String((x&&x.message)||x).slice(0,160))})}
   const c=e.target.closest('[data-copy]');
   if(c){e.preventDefault();e.stopPropagation();copyText(c.dataset.copy)}
 },true);
@@ -2634,7 +2656,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='27-10 · v16 suivi';
+const APP_VER='27-10 · v17 suivi';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
