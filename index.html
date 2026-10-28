@@ -1638,7 +1638,7 @@ function onPut(c,id,o){
 /* --- photo de l'agent --- */
 function photoOf(u){const a=(S.agentinfo||[]).find(x=>x.id===u);return a&&a.photo||''}
 function pickPhoto(u,done){
-  const i=document.createElement('input');i.type='file';i.accept='image/*';i.capture='user';
+  const i=document.createElement('input');i.type='file';i.accept='image/*';
   i.onchange=()=>{const f=i.files[0];if(!f)return;const img=new Image();img.onload=()=>{
     const s=96,cv=document.createElement('canvas');cv.width=cv.height=s;const x=cv.getContext('2d'),m=Math.min(img.width,img.height);
     x.drawImage(img,(img.width-m)/2,(img.height-m)/2,m,m,0,0,s,s);
@@ -2631,7 +2631,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='27-10 · v14 suivi';
+const APP_VER='27-10 · v15 suivi';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
