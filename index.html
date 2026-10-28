@@ -1524,7 +1524,7 @@ function statusOf(rec,now,c){
 window.__trk={addPoint,statusOf,hav,DEF};
 
 /* --- état local de l'agent --- */
-let rec=null,watch=null,tick=null,dirty=false,lastFlush=0,busy=false,onChange=()=>{};
+let rec=null,watch=null,tick=null,dirty=false,lastFlush=0,busy=false,syncErr='',lastOk=0,onChange=()=>{};
 const LSK='sap_trk_rec';
 const saveLocal=()=>{try{localStorage.setItem(LSK,JSON.stringify(rec))}catch(e){}};
 function loadLocal(){
@@ -1535,7 +1535,7 @@ async function flush(force){
   if(!rec)return;
   if(!force&&!dirty&&Date.now()-lastFlush<HB)return;
   rec.hb=Date.now();saveLocal();dirty=false;lastFlush=Date.now();
-  try{await put('tracks',idOf(rec.uid,rec.day),rec)}catch(e){dirty=true}
+  try{await put('tracks',idOf(rec.uid,rec.day),rec);syncErr='';lastOk=Date.now()}catch(e){dirty=true;syncErr=String((e&&(e.message||e.details))||e).slice(0,180)}
   onChange();
 }
 function setGps(v){if(rec&&rec.gps!==v){rec.gps=v;dirty=true;saveLocal();flush(true)}}
@@ -1642,7 +1642,7 @@ function pickPhoto(u,done){
   i.onchange=()=>{const f=i.files[0];if(!f)return;const img=new Image();img.onload=()=>{
     const s=96,cv=document.createElement('canvas');cv.width=cv.height=s;const x=cv.getContext('2d'),m=Math.min(img.width,img.height);
     x.drawImage(img,(img.width-m)/2,(img.height-m)/2,m,m,0,0,s,s);
-    put('agentinfo',u,{photo:cv.toDataURL('image/jpeg',.72),at:Date.now()}).then(()=>{toast('Photo enregistrée');done&&done()}).catch(()=>toast('Photo non enregistrée'));
+    put('agentinfo',u,{photo:cv.toDataURL('image/jpeg',.72),at:Date.now()}).then(()=>{toast('Photo enregistrée');done&&done()}).catch(e=>{alert('Photo NON enregistrée sur le serveur : '+String((e&&(e.message||e.details))||e).slice(0,200));done&&done()});
   };img.src=URL.createObjectURL(f)};
   i.click();
 }
@@ -1674,6 +1674,8 @@ function openWork(){
         <div class="kpi"><span>Visites</span><b>${r.visits.length}</b><small>aujourd'hui</small></div>
       </div>
       <p class="note">${last}. ${net}.</p>
+      <p class="note" style="${syncErr?'color:var(--bad);font-weight:600':''}">${syncErr?'Envoi au directeur : ÉCHEC. '+esc(syncErr):(lastOk?'Dernier envoi au directeur réussi à '+hm(lastOk)+'.':(on?'Aucun envoi réussi pour l\'instant.':''))}</p>
+      ${on?'<button class="btn line sm" id="wsend" style="margin-bottom:8px">Envoyer maintenant</button>':''}
       <button class="btn sec2" id="wvis" ${on?'':'disabled'} style="margin-top:6px">Enregistrer une visite client</button>
       <div class="sec"><h2>Mes visites</h2><span>${myV.length}</span></div>
       <div class="list">${myV.map(v=>`<div class="row"><div class="l"><b>${esc(v.name||'Client')}</b><small>${hm(v.t)} · ${RES[v.res][0]}${v.lat==null?' · sans position':''}</small></div></div>`).join('')||'<p class="note">Aucune visite enregistrée.</p>'}</div>
@@ -1686,6 +1688,7 @@ function openWork(){
     const g=$('#wgo',el);if(g)g.onclick=async()=>{g.disabled=true;await start();draw()};
     const e=$('#wend',el);if(e)e.onclick=async()=>{if(confirm('Terminer le travail et arrêter le suivi ?')){await end();draw()}};
     $('#wph',el).onclick=()=>pickPhoto(uidMe(),draw);
+    const sb=$('#wsend',el);if(sb)sb.onclick=async()=>{sb.disabled=true;await flush(true);draw()};
     const vb=$('#wvis',el);if(vb)vb.onclick=openVisit;
   };
   loadLocal();
@@ -2631,7 +2634,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='27-10 · v15 suivi';
+const APP_VER='27-10 · v16 suivi';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
