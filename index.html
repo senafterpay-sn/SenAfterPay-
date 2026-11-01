@@ -51,6 +51,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .row .r b{display:block}
 .dc{display:flex;flex-direction:column;gap:6px}
 .acts{display:flex;gap:8px;flex-wrap:wrap}
+.mh{margin:34px 0 4px;padding:13px 16px;border-radius:12px;background:var(--accent);color:#fff;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}.mh span{font:800 20px var(--f-body)}.mh small{font:700 13px var(--f-body);opacity:.92}
 .acts a,.acts button{flex:1;min-width:76px;border:0;cursor:pointer;text-align:center;text-decoration:none;padding:10px 8px;border-radius:10px;font:700 13px var(--f-body);background:var(--accent-soft);color:var(--accent)}
 .acts a.wa,.acts button.wa{background:var(--ok-soft);color:var(--ok)}
 .chart{width:100%;height:auto;display:block} .chart text{fill:var(--mute);font:11px var(--f-body)} .chart .bar-r{fill:var(--accent)} .chart line{stroke:var(--line)}
@@ -960,7 +961,7 @@ const today=()=>ymd(new Date());
 const fdate=s=>{if(!s)return'';const[y,m,d]=s.slice(0,10).split('-');return d+'/'+m+'/'+y};
 const uid=p=>p+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 function addMonths(s,k){const[y,m,d]=s.split('-').map(Number);const t=new Date(y,m-1+k,1);const last=new Date(t.getFullYear(),t.getMonth()+1,0).getDate();t.setDate(Math.min(d,last));return ymd(t)}
-function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),2400)}
+function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),Math.min(7000,2400+String(msg).length*40))}
 
 /* ========= Calculs de crédit (fonctions pures, testées) =========
    Le solde n'est jamais stocké : il se recalcule à partir des paiements non annulés. */
@@ -1074,10 +1075,12 @@ const sellerOf=s=>s.seller||agentOf(s);
 function phoneIntl(p){let n=String(p||'').replace(/\D/g,'');if(n.length===9&&n[0]==='7')n='221'+n;return n.length>=11?n:''}
 const phoneShow=p=>{const n=String(p||'').replace(/\D/g,'');return n.length===9?n.replace(/(\d{2})(\d{3})(\d{2})(\d{2})/,'$1 $2 $3 $4'):(p||'')};
 function daysUntil(due,now){const f=s=>{const[y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)};return Math.round((f(due)-f(now))/864e5)}
+const productsText=s=>(s.lines||[]).map(l=>l.qty+' x '+l.name).join(', ');
 function reminderText(e){
   const c=e.client,d=daysUntil(e.due,today());
-  const v={nom:c?c.name:'',montant:money(e.balance),facture:ref(e.sale),tranche:e.n+'/'+e.sale.schedule.length,date:fdate(e.due)};
-  const tpl=comp().reminder||(d<0?'Bonjour {nom}, SenAfterPay vous rappelle que votre paiement de {montant} (facture {facture}, tranche {tranche}) était prévu le {date}. Merci de bien vouloir régulariser.':'Bonjour {nom}, SenAfterPay vous rappelle que votre paiement de {montant} (facture {facture}, tranche {tranche}) est prévu le {date}. Merci de votre confiance.');
+  const v={nom:c?c.name:'',montant:money(e.balance),facture:ref(e.sale),tranche:e.n+'/'+e.sale.schedule.length,date:fdate(e.due),produit:productsText(e.sale)};
+  let tpl=comp().reminder||(d<0?'Bonjour {nom}, SenAfterPay vous rappelle votre paiement de {montant} pour : {produit} (facture {facture}, tranche {tranche}). Il était prévu le {date}. Merci de bien vouloir régulariser.':'Bonjour {nom}, SenAfterPay vous rappelle votre paiement de {montant} pour : {produit} (facture {facture}, tranche {tranche}). Il est prévu le {date}. Merci de votre confiance.');
+  if(!/\{produit\}/.test(tpl))tpl+=' Produit : {produit}.';
   return tpl.replace(/\{(\w+)\}/g,(m,k)=>v[k]!==undefined?v[k]:m);
 }
 
@@ -1264,7 +1267,7 @@ function dueActs(e){
   const chan={tel:'appel',sms:'SMS',wa:'WhatsApp',copy:'contact'};
   if(!ph)return '<div class="acts">'+hb+'</div><p class="note" style="margin:6px 0 0">Aucun numéro valide pour ce client : ajoutez-le sur sa fiche pour pouvoir l\'appeler ou lui écrire.</p>';
   const state=d<0?'En retard de '+(-d)+' jour(s)':d===0?"Paiement prévu aujourd'hui":d<=5?'Rappel à envoyer : dans '+d+' jour(s)':'';
-  return `<div class="acts"><a href="tel:+${ph}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|tel">Appeler</a><a href="sms:+${ph}?body=${txt}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|sms">SMS</a><a class="wa" href="https://wa.me/${ph}?text=${txt}" target="_blank" rel="noopener" data-rem="${k}|wa">WhatsApp</a>${hb}</div>${rm?`<p class="note" style="margin:0">Rappel envoyé le ${fdate(rm.at)} (${chan[rm.channel]||rm.channel})</p>`:(state?`<p class="note" style="margin:0">${state}</p>`:'')}`;
+  return `<div class="acts"><a href="tel:+${ph}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|tel">Appeler</a><a href="sms:+${ph}?body=${txt}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|sms">SMS</a><button type="button" class="wa" data-wasend="${k}">WhatsApp</button>${hb}</div>${rm?`<p class="note" style="margin:0">Rappel envoyé le ${fdate(rm.at)} (${chan[rm.channel]||rm.channel})</p>`:(state?`<p class="note" style="margin:0">${state}</p>`:'')}`;
 }
 function dueRow(e,showDate){
   const[c,l]=dueTag(e.status),cl=e.client;
@@ -1327,8 +1330,11 @@ function vDue(v){
   v.innerHTML=`<div class="sec"><h2>Échéances</h2><span>${D.length} · ${money(D.reduce((a,e)=>a+e.balance,0))}</span></div>
   ${nSoon&&dueF!=='soon'?`<button type="button" class="btn" id="goSoon" style="width:100%;margin-bottom:10px">${nSoon} rappel${nSoon>1?'s':''} à envoyer (5 jours)</button>`:''}
   <div class="seg" id="df" style="margin-bottom:6px">${chips.map(c=>`<button data-f="${c[0]}" aria-pressed="${dueF===c[0]}">${c[1]}</button>`).join('')}</div>
-  ${days.length?days.map(d=>{const L=D.filter(e=>e.due===d),{t,tag}=dayLabel(d,now);
-    return `<div style="margin:22px 0 8px"><h2 style="font-size:16px">${esc(t)}</h2><div class="note" style="margin:3px 0 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">${tag?`<span class="pill ${tag[0]}">${tag[1]}</span>`:''}<span>${L.length} paiement${L.length>1?'s':''} à recevoir · <b>${money(L.reduce((a,e)=>a+e.balance,0))}</b></span></div></div><div class="list">${L.map(e=>dueRow(e,false)).join('')}</div>`}).join(''):'<div class="empty" style="margin-top:14px">Aucune échéance dans cette liste.</div>'}
+  ${days.length?days.map((d,di)=>{const L=D.filter(e=>e.due===d),{t,tag}=dayLabel(d,now);
+    const mk=d.slice(0,7),newM=di===0||days[di-1].slice(0,7)!==mk,MD=D.filter(e=>e.due.slice(0,7)===mk);
+    let mt=new Date(+mk.slice(0,4),+mk.slice(5,7)-1,1).toLocaleDateString('fr-FR',{month:'long',year:'numeric'});mt=mt.charAt(0).toUpperCase()+mt.slice(1);
+    const mh=newM?`<div class="mh"><span>${esc(mt)}</span><small>${MD.length} paiement${MD.length>1?'s':''} · ${money(MD.reduce((a,e)=>a+e.balance,0))}</small></div>`:'';
+    return mh+`<div style="margin:22px 0 8px"><h2 style="font-size:16px">${esc(t)}</h2><div class="note" style="margin:3px 0 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">${tag?`<span class="pill ${tag[0]}">${tag[1]}</span>`:''}<span>${L.length} paiement${L.length>1?'s':''} à recevoir · <b>${money(L.reduce((a,e)=>a+e.balance,0))}</b></span></div></div><div class="list">${L.map(e=>dueRow(e,false)).join('')}</div>`}).join(''):'<div class="empty" style="margin-top:14px">Aucune échéance dans cette liste.</div>'}
   ${dueF==='all'?`<div class="sec" style="margin-top:24px"><h2>Crédits remboursés</h2><span>${done.length}</span></div><div class="list">${done.length?done.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>${esc(x.c?x.c.name:'Client')}</b><small>${esc(ref(x.s))}</small></div><div class="r"><span class="pill ok">Soldé</span></div></div>`).join(''):'<div class="empty">Aucun pour le moment.</div>'}</div>`:''}`;
   v.querySelectorAll('#df button').forEach(b=>b.onclick=()=>{dueF=b.dataset.f;render()});
   const gs=v.querySelector('#goSoon');if(gs)gs.onclick=()=>{dueF='soon';render()};
@@ -1797,7 +1803,14 @@ function openTracking(){
     $('#tt',el).onchange=e=>{F.to=e.target.value||today();if(F.to<F.from)F.from=F.to;$('#tf',el).value=F.from;fitNext=true;dirUpdate()};
     $('#tq1',el).onclick=()=>{F.from=F.to=today();$('#tf',el).value=F.from;$('#tt',el).value=F.to;fitNext=true;dirUpdate()};
     $('#tq2',el).onclick=()=>{F.to=today();F.from=addDays(F.to,-6);$('#tf',el).value=F.from;$('#tt',el).value=F.to;fitNext=true;dirUpdate()};
-    $('#tq3',el).onclick=async()=>{if(!('Notification' in window)){toast('Notifications non disponibles sur ce téléphone');return}const p=await Notification.requestPermission();toast(p==='granted'?'Notifications activées (application ouverte)':'Notifications refusées')};
+    $('#tq3',el).onclick=async()=>{
+      try{
+        if(SAPN){const r=await SAPN.notifyPermission();await new Promise(z=>setTimeout(z,1500));const q=await SAPN.notifyEnabled();
+          if(q&&q.enabled){await SAPN.notify({title:'SenAfterPay',body:'Alertes activées : vous serez prévenu quand un agent reste immobile.'});toast('Alertes activées')}
+          else toast('Autorisez les notifications : Paramètres du téléphone > Applications > SenAfterPay > Notifications');return}
+        if(!('Notification' in window)){toast('Alertes dans l\'application activées (son et vibration)');try{localStorage.setItem('sap_trk_alert','1')}catch(e){}return}
+        const p=await Notification.requestPermission();toast(p==='granted'?'Alertes activées (application ouverte)':'Notifications refusées dans ce navigateur')
+      }catch(e){toast('Alertes : '+String((e&&e.message)||e).slice(0,100))}};
     $('#tcfg',el).onclick=openCfg;
     const lf=loadLeaflet();
     if(lf){MAP=L.map($('#tmap',el),{zoomControl:true,attributionControl:true}).setView([14.69,-17.45],11);
@@ -1879,6 +1892,12 @@ function openCfg(){
     $('#cok',el).onclick=async()=>{await put('settings','track',{from:val(el,'cf')||DEF.from,to:val(el,'ct')||DEF.to,stopMin:Math.max(5,num(el,'cs')||20),radius:Math.max(15,num(el,'cr')||40)});toast('Réglages enregistrés');o.close()}});
 }
 /* --- notification du directeur (application ouverte) --- */
+function alertDir(msg){
+  toast(msg);try{navigator.vibrate&&navigator.vibrate([300,150,300,150,300])}catch(e){}
+  try{const A=new (window.AudioContext||window.webkitAudioContext)(),o=A.createOscillator(),gn=A.createGain();o.frequency.value=880;gn.gain.value=.2;o.connect(gn);gn.connect(A.destination);o.start();setTimeout(()=>{o.stop();A.close()},700)}catch(e){}
+  if(SAPN){SAPN.notify({title:'SenAfterPay · Alerte',body:msg}).catch(()=>{});return}
+  try{if('Notification' in window&&Notification.permission==='granted')new Notification('SenAfterPay',{body:msg})}catch(e){}
+}
 const seen=(()=>{try{return new Set(JSON.parse(localStorage.getItem('sap_trk_seen')||'[]'))}catch(e){return new Set()}})();
 function scan(c){
   if(c!=='tracks'||!ME.isAdmin)return;
@@ -1887,7 +1906,7 @@ function scan(c){
     if(!s.open||now-s.end>OFFAFTER||s.end-s.start<cf.stopMin*60000||seen.has(s.id))return;
     seen.add(s.id);try{localStorage.setItem('sap_trk_seen',JSON.stringify([...seen].slice(-200)))}catch(e){}
     const msg='ALERTE : '+nameOf(r.uid)+' est immobile depuis '+Math.round((s.end-s.start)/60000)+' min. Début de l\'arrêt : '+hm(s.start)+'.';
-    toast(msg);try{if('Notification' in window&&Notification.permission==='granted')new Notification('SenAfterPay',{body:msg})}catch(e){}
+    alertDir(msg);
   });
 }
 function homeCard(){
@@ -2336,27 +2355,83 @@ async function makePDF(el,name,html){
     toast('PDF indisponible, enregistrement du fichier…');saveFile(name.replace('.pdf','.html'),html);
   }
 }
+const SAPN=(()=>{try{const C=window.Capacitor;return C&&C.isNativePlatform&&C.isNativePlatform()?C.registerPlugin('SapShare'):null}catch(e){return null}})();
+const blobB64=b=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]);r.onerror=rej;r.readAsDataURL(b)});
 async function invoiceImage(el){
   const LB=window.SAP_LIBS||{};await loadJS(LB.h2c||'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
   const cv=await html2canvas(el,{scale:2,backgroundColor:'#ffffff',useCORS:true});
   const blob=await new Promise(r=>cv.toBlob(r,'image/png'));
   if(!blob)throw new Error('vide');return blob;
 }
-// Un seul clic : si le client a un numéro, l'image est envoyée par le partage du téléphone (choisir WhatsApp) ;
-// sinon, ou si le partage n'est pas possible, l'image est enregistrée dans le téléphone (galerie / téléchargements).
+function showImageOverlay(blob,name,msg){
+  const old=document.getElementById('imgov');if(old)old.remove();
+  const url=URL.createObjectURL(blob),d=document.createElement('div');d.id='imgov';
+  d.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.88);display:flex;flex-direction:column;align-items:center;padding:14px;gap:10px;overflow:auto';
+  d.innerHTML='<p style="color:#fff;margin:0;font:600 15px system-ui;text-align:center;max-width:420px">'+esc(msg||'Appuyez longuement sur l\'image, puis « Télécharger l\'image » pour la garder dans la galerie.')+'</p><img alt="" style="max-width:100%;max-height:68vh;background:#fff;border-radius:8px" src="'+url+'"><div style="display:flex;gap:10px;width:100%;max-width:420px"><a download="'+esc(name)+'" href="'+url+'" style="flex:1;text-align:center;background:#14307f;color:#fff;padding:13px;border-radius:10px;font:700 15px system-ui;text-decoration:none">Télécharger l\'image</a><button type="button" id="imgx" style="flex:1;border:0;background:#fff;color:#14307f;padding:13px;border-radius:10px;font:700 15px system-ui">Fermer</button></div>';
+  document.body.appendChild(d);d.querySelector('#imgx').onclick=()=>{d.remove();URL.revokeObjectURL(url)};
+}
+/* Livre une image : WhatsApp direct dans la discussion du client (application Android),
+   sinon partage du téléphone, sinon enregistrement dans la galerie, sinon image à garder à la main. */
+async function deliverImage(blob,name,o){
+  o=o||{};const ph=o.phone||'';
+  if(SAPN){
+    if(ph){try{const r=await SAPN.shareImage({data:await blobB64(blob),name,text:o.text||'',phone:ph});return r&&r.mode==='chat'?'chat':'whatsapp'}catch(e){}}
+    try{await SAPN.saveImage({data:await blobB64(blob),name});return'gallery'}catch(e){}
+  }
+  const file=new File([blob],name,{type:'image/png'});
+  if(ph&&navigator.share){try{if(!navigator.canShare||navigator.canShare({files:[file]})){await navigator.share({files:[file],title:o.title||'',text:o.text||''});return'shared'}}catch(e){if(e&&e.name==='AbortError')return'cancel'}}
+  showImageOverlay(blob,name,ph?'Le partage direct n\'est pas possible ici. Enregistrez l\'image puis envoyez-la sur WhatsApp.':'');
+  return'overlay';
+}
+const deliverMsg={chat:'Image envoyée dans la discussion du client : touchez Envoyer dans WhatsApp',whatsapp:'WhatsApp ouvert : touchez Envoyer',shared:'Choisissez WhatsApp pour envoyer',gallery:'Image enregistrée dans la galerie (dossier SenAfterPay)',overlay:'',cancel:''};
+// Un seul clic : crée l'image de la facture et l'envoie au client sur WhatsApp (s'il a un numéro), sinon l'enregistre dans la galerie.
 async function sendInvoiceImage(el,s,c,st){
   const name='facture-'+ref(s)+'.png',ph=phoneIntl(c&&c.phone);
   try{
     toast('Création de l\'image…');
-    const blob=await invoiceImage(el),file=new File([blob],name,{type:'image/png'});
-    if(ph&&navigator.canShare&&navigator.canShare({files:[file]})){
-      try{await navigator.share({files:[file],title:'Facture '+ref(s),text:invoiceText(s,c,st)});return}
-      catch(e){if(e&&e.name==='AbortError')return}
-    }
-    const d=await claude.use('downloads');if(!d)throw new Error('nodl');
-    await d.save({filename:name,data:blob});
-    toast(ph?'Partage indisponible : image enregistrée dans le téléphone (galerie)':'Pas de numéro WhatsApp : image enregistrée dans le téléphone (galerie)');
-  }catch(e){if(e&&e.code==='declined')return;toast('Image indisponible sur ce téléphone')}
+    const blob=await invoiceImage(el),r=await deliverImage(blob,name,{phone:ph,text:invoiceText(s,c,st),title:'Facture '+ref(s)});
+    if(deliverMsg[r])toast((ph?'':'Pas de numéro WhatsApp · ')+deliverMsg[r]);
+  }catch(e){toast('Image impossible à créer sur ce téléphone')}
+}
+/* Image de rappel : photo du produit, montant et date en gros, pour les clients qui ne savent pas lire */
+const loadImg=src=>new Promise(r=>{if(!src)return r(null);const i=new Image();i.onload=()=>r(i);i.onerror=()=>r(null);i.src=src});
+async function reminderImage(e){
+  const s=e.sale,c=e.client,d=daysUntil(e.due,today()),late=d<0,W=800,P=40;
+  const prods=[];(s.lines||[]).forEach(l=>{const p=byId(S.products,l.productId||l.pid);prods.push({name:l.name,qty:l.qty,img:p&&p.img||''})});
+  const shown=prods.slice(0,3),imgs=await Promise.all(shown.map(p=>loadImg(p.img)));
+  const n=shown.length||1,box=n===1?420:n===2?330:220,gap=20,rowW=n*box+(n-1)*gap,top=170,nameH=88;
+  const H=top+box+nameH+420,cv=document.createElement('canvas');cv.width=W;cv.height=H;const g=cv.getContext('2d');
+  g.fillStyle='#fff';g.fillRect(0,0,W,H);
+  g.fillStyle='#0b1f66';g.fillRect(0,0,W,110);g.fillStyle='#fff';g.font='bold 48px sans-serif';g.textAlign='center';g.fillText('SenAfterPay',W/2,72);
+  g.fillStyle='#0b1f66';g.font='bold 40px sans-serif';g.fillText('Bonjour '+String(c?c.name:'').split(' ')[0],W/2,150);
+  const x0=(W-rowW)/2;
+  shown.forEach((p,i)=>{
+    const x=x0+i*(box+gap),y=top+20;g.fillStyle='#eef1fb';g.fillRect(x,y,box,box);
+    const im=imgs[i];
+    if(im){const k=Math.min(box/im.width,box/im.height),w=im.width*k,hh=im.height*k;g.drawImage(im,x+(box-w)/2,y+(box-hh)/2,w,hh)}
+    else{g.fillStyle='#14307f';g.font='bold '+Math.round(box*.5)+'px sans-serif';g.fillText(String(p.name||'?').charAt(0).toUpperCase(),x+box/2,y+box*.68)}
+    g.fillStyle='#0b1f66';g.font='bold '+(n>2?24:30)+'px sans-serif';
+    const lab=(p.qty>1?p.qty+' x ':'')+p.name;const mx=box;let t=lab;while(g.measureText(t).width>mx&&t.length>3)t=t.slice(0,-2);if(t!==lab)t+='…';
+    g.fillText(t,x+box/2,y+box+40);
+  });
+  if(prods.length>3){g.fillStyle='#5c6385';g.font='24px sans-serif';g.fillText('+ '+(prods.length-3)+' autre(s) produit(s)',W/2,top+box+nameH+4)}
+  let y=top+box+nameH+30;
+  g.fillStyle=late?'#fde8e8':'#e8f6ee';g.fillRect(P,y,W-2*P,310);
+  g.fillStyle=late?'#b3261e':'#0b6b3a';g.font='bold 34px sans-serif';g.fillText(late?'PAIEMENT EN RETARD':(d===0?"À PAYER AUJOURD'HUI":'PAIEMENT À FAIRE'),W/2,y+58);
+  g.fillStyle='#0b1f66';g.font='bold 76px sans-serif';g.fillText(money(e.balance),W/2,y+160);
+  g.font='bold 40px sans-serif';g.fillText('Date : '+fdate(e.due),W/2,y+225);
+  g.font='28px sans-serif';g.fillStyle='#5c6385';g.fillText('Facture '+ref(s)+' · tranche '+e.n+'/'+s.schedule.length,W/2,y+275);
+  const co=comp();g.font='bold 30px sans-serif';g.fillStyle='#0b1f66';g.fillText((co.phone?'Appelez : '+co.phone:'')||'Merci de votre confiance',W/2,H-34);
+  const blob=await new Promise(r=>cv.toBlob(r,'image/png'));if(!blob)throw new Error('vide');return blob;
+}
+async function sendReminder(e){
+  const ph=phoneIntl(e.client&&e.client.phone);
+  try{
+    put('reminders',e.sale.id+'_'+e.n,{saleId:e.sale.id,n:e.n,channel:'wa',at:new Date().toISOString(),by:ME.id||''}).catch(()=>{});
+    toast('Création de l\'image du rappel…');
+    const blob=await reminderImage(e),r=await deliverImage(blob,'rappel-'+ref(e.sale)+'-t'+e.n+'.png',{phone:ph,text:reminderText(e),title:'Rappel de paiement'});
+    if(deliverMsg[r])toast(deliverMsg[r]);
+  }catch(x){window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(reminderText(e)),'_blank');toast('Image impossible : message texte ouvert')}
 }
 function openInvoice(sid){
   const s=byId(S.sales,sid),c=byId(S.clients,s.clientId),st=saleState(s,pays(),today());
@@ -2548,6 +2623,8 @@ document.addEventListener('click',e=>{
     if(!window.SAP_STANDALONE&&(ch==='tel'||ch==='sms')){const num=(r.getAttribute('href')||'').replace(/^(tel|sms):/,'').split('?')[0];
       (async()=>{try{await navigator.clipboard.writeText(num)}catch(_){const i=document.createElement('input');i.value=num;document.body.appendChild(i);i.select();try{document.execCommand('copy')}catch(__){}i.remove()}
         toast((ch==='tel'?'Appel : ':'SMS : ')+num+' (numéro copié). Si rien ne s\'ouvre, collez-le dans l\'application Téléphone.')})()}}
+  const ws=e.target.closest('[data-wasend]');
+  if(ws){e.preventDefault();e.stopPropagation();const[sid,n]=ws.dataset.wasend.split('|');const en=dueList().find(x=>x.sale.id===sid&&x.n===Number(n));if(en)sendReminder(en)}
   const pd=e.target.closest('[data-paydue]');
   if(pd){e.preventDefault();e.stopPropagation();const[sid,n]=pd.dataset.paydue.split('|');openDuePay(sid,Number(n))}
   const c=e.target.closest('[data-copy]');
@@ -2686,7 +2763,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='27-10 · v18 suivi';
+const APP_VER='27-10 · v19 suivi';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -2927,7 +3004,7 @@ function receiptHTML(p,s,c,st,cn){
   </tbody></table>${cn?`<p><small>Annulé le ${fdate(cn.date)} : ${esc(cn.reason)}</small></p>`:''}
   ${p.method!=='Espèces'&&p.status!=='annulé'?'<p><small>Paiement mobile ou bancaire déclaré, à vérifier auprès de l\'opérateur.</small></p>':''}</div>`;
 }
-const FXCSS='<style>.fx{background:#fff;color:#0b1f66;font:14px/1.4 system-ui,-apple-system,sans-serif;border:1px solid #dfe2ee;border-radius:12px;padding:16px;overflow:hidden}.fx *{box-sizing:border-box}.fx-top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:10px}.fx-logo{height:60px;width:auto;max-width:100%}.fx-ids{margin:12px 0 0;font-size:13px}.fx-ids div{display:flex;gap:8px;align-items:center;margin:4px 0}.fx-ids svg,.fx-foot svg{width:16px;height:16px;flex:none;stroke:#0b1f66;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.fx-title{font:800 22px system-ui,sans-serif;border-bottom:3px solid #f2b705;padding-bottom:2px;text-align:right;white-space:nowrap}.fx-title small{display:block;font:600 12px system-ui;color:#5a6486;border:0;margin-top:2px}.fx-boxes{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:4px 14px}.fx-box{border:1px solid #0b1f66;border-radius:10px;padding:22px 12px 6px;position:relative;margin-top:16px}.fx-tab{position:absolute;top:-1px;left:-1px;background:#0b1f66;color:#fff;border-radius:10px 0 10px 0;padding:3px 12px;font-weight:700;font-size:12.5px}.fx-row{display:flex;gap:6px;align-items:baseline;border-bottom:1px solid #8a93b8;padding:5px 0;font-size:13px;min-height:28px}.fx-row:last-child{border-bottom:0}.fx-row b{font-weight:400;flex:none}.fx-row span{flex:1;font-weight:700;overflow-wrap:anywhere}.fx table{width:100%;border-collapse:collapse;margin-top:18px}.fx th{background:#0b1f66;color:#fff;padding:7px 6px;font-size:13px;border:1px solid #0b1f66}.fx td{border:1px solid #0b1f66;padding:5px 6px;height:30px;font-size:13px}.fx .n{text-align:right;white-space:nowrap}.fx .c{text-align:center}.fx-wrap{overflow-x:auto}.fx-foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 16px;margin-top:18px;border-top:1px solid #dfe2ee;padding-top:10px;font-size:12px}.fx-foot span{display:flex;gap:6px;align-items:center}.fx-note{font-size:11px;color:#5a6486;margin:8px 0 0;text-align:center}</style>';
+const FXCSS='<style>.fx{background:#fff;color:#0b1f66;font:14px/1.4 system-ui,-apple-system,sans-serif;border:1px solid #dfe2ee;border-radius:12px;padding:16px;overflow:hidden}.fx *{box-sizing:border-box}.fx-top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:10px}.fx-logo{height:60px;width:auto;max-width:100%}.fx-ids{margin:12px 0 0;font-size:13px}.fx-ids div{display:flex;gap:8px;align-items:center;margin:4px 0}.fx-ids svg,.fx-foot svg{width:16px;height:16px;flex:none;stroke:#0b1f66;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.fx-title{font:800 22px system-ui,sans-serif;border-bottom:3px solid #f2b705;padding-bottom:2px;text-align:right;white-space:nowrap}.fx-title small{display:block;font:600 12px system-ui;color:#5a6486;border:0;margin-top:2px}.fx-boxes{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:4px 14px}.fx-box{border:1px solid #0b1f66;border-radius:10px;padding:22px 12px 6px;position:relative;margin-top:16px}.fx-tab{position:absolute;top:-1px;left:-1px;background:#0b1f66;color:#fff;border-radius:10px 0 10px 0;padding:3px 12px;font-weight:700;font-size:12.5px}.fx-row em{font-style:normal}.fx-row .nw,.fx-row em.nw{white-space:nowrap}.fx-row{flex-wrap:wrap;display:flex;gap:6px;align-items:baseline;border-bottom:1px solid #8a93b8;padding:5px 0;font-size:13px;min-height:28px}.fx-row:last-child{border-bottom:0}.fx-row b{font-weight:400;flex:none}.fx-row span{flex:1;font-weight:700;overflow-wrap:anywhere}.fx table{width:100%;border-collapse:collapse;margin-top:18px}.fx th{background:#0b1f66;color:#fff;padding:7px 6px;font-size:13px;border:1px solid #0b1f66}.fx td{border:1px solid #0b1f66;padding:5px 6px;height:30px;font-size:13px}.fx .n{text-align:right;white-space:nowrap}.fx .c{text-align:center}.fx-wrap{overflow-x:auto}.fx-foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 16px;margin-top:18px;border-top:1px solid #dfe2ee;padding-top:10px;font-size:12px}.fx-foot span{display:flex;gap:6px;align-items:center}.fx-note{font-size:11px;color:#5a6486;margin:8px 0 0;text-align:center}</style>';
 const FXI={pin:'<svg viewBox="0 0 24 24"><path d="M12 22s7-6.2 7-12a7 7 0 10-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>',bld:'<svg viewBox="0 0 24 24"><path d="M4 21V8l8-5 8 5v13zM9 21v-5h6v5M8 11h2M14 11h2"/></svg>',tel:'<svg viewBox="0 0 24 24"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 005 5L15 13l5 2v4a2 2 0 01-2 2A16 16 0 013 6a2 2 0 012-2z"/></svg>',mail:'<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>',web:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>'};
 // Nom / prénom : le dernier mot est le nom de famille, le reste le prénom.
 function splitName(full){const p=String(full||'').trim().split(/\s+/).filter(Boolean);return p.length<2?{prenom:'',nom:p[0]||''}:{prenom:p.slice(0,-1).join(' '),nom:p[p.length-1]}}
@@ -2951,7 +3028,7 @@ function invoiceHTML(s,c,st){
   ${s.lines.map(l=>`<tr><td class="c">${l.qty}</td><td>${esc(l.name)}</td><td class="n">${f(l.price)}</td><td class="n">${f(l.qty*l.price)}</td></tr>`).join('')}
   ${Array(filler).fill('<tr><td></td><td></td><td></td><td></td></tr>').join('')}
   <tr><td colspan="2" class="c"><b>Montant Total</b></td><td></td><td class="n"><b>${f(s.total)}</b></td></tr></tbody></table></div>
-  <div class="fx-box"><span class="fx-tab">Conditions de paiement</span>${s.type==='credit'?`${row('Acompte versé',money(s.deposit))}${row('Reste à payer',money(st.balance))}${st.sched.map(e=>`<div class="fx-row"><b>Tranche ${e.n}/${st.sched.length} :</b><span>${fdate(e.due)} · ${f(e.amount)} FCFA</span><b>${lab[e.status]}</b></div>`).join('')}`:row('Règlement','Payé comptant')}</div>
+  <div class="fx-box"><span class="fx-tab">Conditions de paiement</span>${s.type==='credit'?`${row('Acompte versé',money(s.deposit))}${row('Reste à payer',money(st.balance))}${st.sched.map(e=>`<div class="fx-row"><b class="nw">Tranche ${e.n}/${st.sched.length} :</b><span><em class="nw">${fdate(e.due)}</em> · <em class="nw">${f(e.amount)} FCFA</em></span><b class="nw">${lab[e.status]}</b></div>`).join('')}`:row('Règlement','Payé comptant')}</div>
   <div class="fx-box"><span class="fx-tab">Adresse de livraison</span>${row('Adresse',livr[0])}<div class="fx-row"><span>${esc(livr[1]||'')}</span></div><div class="fx-row"><span>&nbsp;</span></div></div>
   <div class="fx-foot">${foot.length?foot.map(x=>`<span>${x[0]}${esc(x[1])}</span>`).join(''):`<span>${esc(co.name||'SenAfterPay')}</span>`}</div>
   <p class="fx-note">${esc(co.footer||'Merci de votre confiance.')}</p></div>`;
