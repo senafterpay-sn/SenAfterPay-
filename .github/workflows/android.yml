@@ -69,11 +69,11 @@ jobs:
           npx cap sync android
           SAP_EOF
           cat > patch.py <<'SAP_EOF'
-          """Ajoute au projet Android généré par Capacitor : permissions, capteur de pas, MainActivity."""
+          """Ajoute au projet Android généré par Capacitor : permissions, capteur de pas, partage WhatsApp, MainActivity."""
           import re, shutil, pathlib
           root = pathlib.Path(__file__).parent / 'android' / 'app' / 'src' / 'main'
           java = root / 'java' / 'sn' / 'senafterpay' / 'app'
-          for f in ('StepCounterPlugin.java', 'MainActivity.java'):
+          for f in ('StepCounterPlugin.java', 'SapSharePlugin.java', 'MainActivity.java'):
               shutil.copy(pathlib.Path(__file__).parent / 'native' / f, java / f)
           mf = root / 'AndroidManifest.xml'
           t = mf.read_text(encoding='utf-8')
@@ -82,6 +82,12 @@ jobs:
               <uses-permission android:name="android.permission.WAKE_LOCK" />
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
               <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+              <queries>
+                  <package android:name="com.whatsapp" />
+                  <package android:name="com.whatsapp.w4b" />
+              </queries>
           '''
           if 'ACTIVITY_RECOGNITION' not in t:
               t = t.replace('</manifest>', extra + '</manifest>')
@@ -233,6 +239,206 @@ jobs:
               public void onAccuracyChanged(Sensor sensor, int accuracy) {}
           }
           SAP_EOF
+          cat > native/SapSharePlugin.java <<'SAP_EOF'
+          package sn.senafterpay.app;
+
+          import android.Manifest;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.content.ContentResolver;
+          import android.content.ContentValues;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.media.MediaScannerConnection;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Environment;
+          import android.provider.MediaStore;
+          import android.util.Base64;
+
+          import androidx.core.app.ActivityCompat;
+          import androidx.core.app.NotificationCompat;
+          import androidx.core.app.NotificationManagerCompat;
+          import androidx.core.content.FileProvider;
+
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.OutputStream;
+
+          /**
+           * Fonctions natives de SenAfterPay :
+           *  - saveImage : enregistre une image dans la galerie (Pictures/SenAfterPay) ;
+           *  - shareImage : envoie une image directement dans la discussion WhatsApp d'un numéro ;
+           *  - notify / notifyPermission : notifications du directeur (alertes de suivi).
+           */
+          @CapacitorPlugin(name = "SapShare")
+          public class SapSharePlugin extends Plugin {
+
+              private static final String CHANNEL = "sap_alertes";
+
+              private byte[] decode(String b64) {
+                  if (b64 == null) b64 = "";
+                  int i = b64.indexOf(',');
+                  if (i >= 0) b64 = b64.substring(i + 1);
+                  return Base64.decode(b64, Base64.DEFAULT);
+              }
+
+              private String safe(String n) {
+                  if (n == null || n.isEmpty()) n = "image.png";
+                  return n.replaceAll("[^A-Za-z0-9._-]", "_");
+              }
+
+              @PluginMethod
+              public void saveImage(PluginCall call) {
+                  try {
+                      String name = safe(call.getString("name", "facture.png"));
+                      byte[] data = decode(call.getString("data", ""));
+                      Context ctx = getContext();
+                      if (Build.VERSION.SDK_INT >= 29) {
+                          ContentResolver cr = ctx.getContentResolver();
+                          ContentValues v = new ContentValues();
+                          v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
+                          v.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+                          v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/SenAfterPay");
+                          v.put(MediaStore.Images.Media.IS_PENDING, 1);
+                          Uri uri = cr.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                          if (uri == null) throw new Exception("insertion impossible");
+                          try (OutputStream os = cr.openOutputStream(uri)) {
+                              os.write(data);
+                          }
+                          v.clear();
+                          v.put(MediaStore.Images.Media.IS_PENDING, 0);
+                          cr.update(uri, v, null, null);
+                      } else {
+                          File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "SenAfterPay");
+                          dir.mkdirs();
+                          File f = new File(dir, name);
+                          try (FileOutputStream os = new FileOutputStream(f)) {
+                              os.write(data);
+                          }
+                          MediaScannerConnection.scanFile(ctx, new String[]{f.getAbsolutePath()}, new String[]{"image/png"}, null);
+                      }
+                      JSObject r = new JSObject();
+                      r.put("saved", true);
+                      call.resolve(r);
+                  } catch (Exception e) {
+                      call.reject("Enregistrement impossible : " + e.getMessage());
+                  }
+              }
+
+              private boolean installed(String pkg) {
+                  try {
+                      getContext().getPackageManager().getPackageInfo(pkg, 0);
+                      return true;
+                  } catch (Exception e) {
+                      return false;
+                  }
+              }
+
+              @PluginMethod
+              public void shareImage(PluginCall call) {
+                  try {
+                      String name = safe(call.getString("name", "facture.png"));
+                      byte[] data = decode(call.getString("data", ""));
+                      String text = call.getString("text", "");
+                      String phone = call.getString("phone", "").replaceAll("\\D", "");
+                      Context ctx = getContext();
+                      File dir = new File(ctx.getCacheDir(), "partage");
+                      dir.mkdirs();
+                      File f = new File(dir, name);
+                      try (FileOutputStream os = new FileOutputStream(f)) {
+                          os.write(data);
+                      }
+                      Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", f);
+                      Intent i = new Intent(Intent.ACTION_SEND);
+                      i.setType("image/png");
+                      i.putExtra(Intent.EXTRA_STREAM, uri);
+                      if (text != null && !text.isEmpty()) i.putExtra(Intent.EXTRA_TEXT, text);
+                      i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                      String pkg = installed("com.whatsapp") ? "com.whatsapp" : (installed("com.whatsapp.w4b") ? "com.whatsapp.w4b" : null);
+                      String mode;
+                      if (pkg != null) {
+                          if (!phone.isEmpty()) i.putExtra("jid", phone + "@s.whatsapp.net");
+                          i.setPackage(pkg);
+                          ctx.grantUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                          getActivity().startActivity(i);
+                          mode = phone.isEmpty() ? "whatsapp" : "chat";
+                      } else {
+                          Intent ch = Intent.createChooser(i, "Envoyer la facture");
+                          getActivity().startActivity(ch);
+                          mode = "chooser";
+                      }
+                      JSObject r = new JSObject();
+                      r.put("mode", mode);
+                      call.resolve(r);
+                  } catch (Exception e) {
+                      call.reject("Partage impossible : " + e.getMessage());
+                  }
+              }
+
+              @PluginMethod
+              public void notifyPermission(PluginCall call) {
+                  try {
+                      if (Build.VERSION.SDK_INT >= 33
+                              && ActivityCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                          ActivityCompat.requestPermissions(getActivity(), new String[]{Manifest.permission.POST_NOTIFICATIONS}, 7001);
+                      }
+                      JSObject r = new JSObject();
+                      r.put("enabled", NotificationManagerCompat.from(getContext()).areNotificationsEnabled());
+                      call.resolve(r);
+                  } catch (Exception e) {
+                      call.reject(e.getMessage());
+                  }
+              }
+
+              @PluginMethod
+              public void notifyEnabled(PluginCall call) {
+                  JSObject r = new JSObject();
+                  r.put("enabled", NotificationManagerCompat.from(getContext()).areNotificationsEnabled());
+                  call.resolve(r);
+              }
+
+              @PluginMethod
+              public void notify(PluginCall call) {
+                  try {
+                      Context ctx = getContext();
+                      String title = call.getString("title", "SenAfterPay");
+                      String body = call.getString("body", "");
+                      NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+                      if (Build.VERSION.SDK_INT >= 26) {
+                          NotificationChannel c = new NotificationChannel(CHANNEL, "Alertes de suivi", NotificationManager.IMPORTANCE_HIGH);
+                          c.enableVibration(true);
+                          nm.createNotificationChannel(c);
+                      }
+                      Intent open = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
+                      PendingIntent pi = PendingIntent.getActivity(ctx, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                      NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL)
+                              .setSmallIcon(ctx.getApplicationInfo().icon)
+                              .setContentTitle(title)
+                              .setContentText(body)
+                              .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+                              .setPriority(NotificationCompat.PRIORITY_HIGH)
+                              .setDefaults(NotificationCompat.DEFAULT_ALL)
+                              .setAutoCancel(true)
+                              .setContentIntent(pi);
+                      if (NotificationManagerCompat.from(ctx).areNotificationsEnabled()) {
+                          nm.notify((int) (System.currentTimeMillis() % 100000), b.build());
+                      }
+                      call.resolve();
+                  } catch (Exception e) {
+                      call.reject(e.getMessage());
+                  }
+              }
+          }
+          SAP_EOF
           cat > native/MainActivity.java <<'SAP_EOF'
           package sn.senafterpay.app;
 
@@ -243,6 +449,7 @@ jobs:
               @Override
               public void onCreate(Bundle savedInstanceState) {
                   registerPlugin(StepCounterPlugin.class);
+                  registerPlugin(SapSharePlugin.class);
                   super.onCreate(savedInstanceState);
               }
           }
@@ -271,4 +478,3 @@ jobs:
           tag_name: android-${{ github.run_number }}
           name: Application Android ${{ github.run_number }}
           files: SenAfterPay.apk
-          
