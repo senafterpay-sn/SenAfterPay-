@@ -253,6 +253,7 @@ jobs:
           import android.content.pm.PackageManager;
           import android.media.MediaScannerConnection;
           import android.net.Uri;
+          import android.provider.ContactsContract;
           import android.os.Build;
           import android.os.Environment;
           import android.provider.MediaStore;
@@ -435,6 +436,44 @@ jobs:
                       call.resolve();
                   } catch (Exception e) {
                       call.reject(e.getMessage());
+                  }
+              }
+
+              @PluginMethod
+              public void addContact(PluginCall call) {
+                  try {
+                      Intent i = new Intent(ContactsContract.Intents.Insert.ACTION);
+                      i.setType(ContactsContract.RawContacts.CONTENT_TYPE);
+                      i.putExtra(ContactsContract.Intents.Insert.NAME, call.getString("name", ""));
+                      i.putExtra(ContactsContract.Intents.Insert.PHONE, call.getString("phone", ""));
+                      i.putExtra(ContactsContract.Intents.Insert.PHONE_TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE);
+                      i.putExtra(ContactsContract.Intents.Insert.COMPANY, call.getString("company", ""));
+                      i.putExtra(ContactsContract.Intents.Insert.NOTES, call.getString("note", ""));
+                      getActivity().startActivity(i);
+                      call.resolve();
+                  } catch (Exception e) {
+                      call.reject("Contact impossible : " + e.getMessage());
+                  }
+              }
+
+              @PluginMethod
+              public void openVcf(PluginCall call) {
+                  try {
+                      Context ctx = getContext();
+                      File dir = new File(ctx.getCacheDir(), "partage");
+                      dir.mkdirs();
+                      File f = new File(dir, safe(call.getString("name", "clients.vcf")));
+                      try (FileOutputStream os = new FileOutputStream(f)) {
+                          os.write(call.getString("text", "").getBytes("UTF-8"));
+                      }
+                      Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", f);
+                      Intent i = new Intent(Intent.ACTION_VIEW);
+                      i.setDataAndType(uri, "text/x-vcard");
+                      i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                      getActivity().startActivity(Intent.createChooser(i, "Ajouter les clients aux contacts"));
+                      call.resolve();
+                  } catch (Exception e) {
+                      call.reject("Fichier contacts impossible : " + e.getMessage());
                   }
               }
           }
