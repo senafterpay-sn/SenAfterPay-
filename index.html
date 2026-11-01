@@ -1099,6 +1099,12 @@ const PROF={};
 async function loadProf(){try{const u=await claude.use('user');if(u&&u.list){const L=await u.list();L.forEach(p=>PROF[p.id]={name:p.name,zone:p.zone||'',active:p.active!==false,role:p.role});rerender()}}catch(e){}}
 const ownerName=o=>o?((PROF[o]&&PROF[o].name)||NAMES[o]||(o===ME.id?(ME.name||'Moi'):'Agent')):'Anciennes factures';
 const ownerZone=o=>(o&&PROF[o]&&PROF[o].zone)||'';
+const delDoc=async(c,id)=>{if(DB){await DB.collection(c).doc(id).delete()}else{S[c]=S[c].filter(x=>x.id!==id);lsPut(c);rerender()}};
+async function deleteBook(n,owner){
+  const d=S.invoices.find(b=>b.num===n&&ow(b)===(owner||''));
+  if(S.sales.some(s=>s.fnum===n&&ow(s)===(owner||'')))return false;
+  if(d)await delDoc('invoices',d.id);return true;
+}
 function books(o){
   const keys=new Map();
   S.invoices.forEach(b=>keys.set(ow(b)+'|'+b.num,{num:b.num,owner:ow(b)}));
@@ -1357,10 +1363,16 @@ function vBooks(v){
     const L=Object.values(by).filter(g=>!q||(g.c.name+g.r.map(s=>ref(s)+(s.seller||'')+chiefOf(s)).join(' ')).toLowerCase().replace(/\s/g,'').includes(q)).sort((a,b)=>a.c.name.localeCompare(b.c.name));
     body=L.length?`<div class="list">${L.map(g=>`<div class="row" data-client="${g.c.id}"><div class="l"><b>${esc(g.c.name)}</b><small>${g.r.sort((a,b)=>a.fnum-b.fnum||a.page-b.page).map(s=>esc(ref(s))).join(' · ')}</small></div><div class="r"><b>${g.r.length}</b><small>facture${g.r.length>1?'s':''}</small></div></div>`).join('')}</div>`:'<div class="empty">Aucun client avec facture.</div>';
   }
+  const emptyB=ME.isAdmin&&bookView==='books'?books().filter(b=>b.used===0):[];
   v.innerHTML=`<div class="sec"><h2>Factures</h2><span>${books().length} carnet${books().length>1?'s':''}</span></div>
+  ${emptyB.length?`<button type="button" class="btn line" id="delEmpty" style="width:100%;margin-bottom:10px">Supprimer les ${emptyB.length} facture${emptyB.length>1?'s':''} vide${emptyB.length>1?'s':''} (${emptyB.map(b=>'F'+b.num).join(', ')})</button>`:''}
   <div class="seg" id="bv" style="margin-bottom:8px"><button data-v="books" aria-pressed="${bookView==='books'}">Par facture</button><button data-v="clients" aria-pressed="${bookView==='clients'}">Par client</button></div>
   <input class="search" id="q" type="search" placeholder="Client, facture (F5P8) ou chef" value="${esc(query)}">${body}
   ${ME.isAdmin?'<button class="btn fab" data-act="newbook">+ Facture</button>':''}`;
+  const de=v.querySelector('#delEmpty');if(de)de.onclick=async()=>{
+    if(!confirm('Supprimer '+emptyB.length+' facture(s) vide(s) : '+emptyB.map(b=>'F'+b.num).join(', ')+' ?\nAucune page n\'est utilisée : aucune vente n\'est touchée.'))return;
+    let k=0;for(const b of emptyB){try{if(await deleteBook(b.num,b.owner))k++}catch(e){}}
+    await logAct('Factures vides supprimées',k+' carnet(s)');toast(k+' facture(s) vide(s) supprimée(s)');render()};
   v.querySelectorAll('#bv button').forEach(b=>b.onclick=()=>{bookView=b.dataset.v;query='';render()});
   v.querySelectorAll('[data-book]').forEach(r=>r.onclick=()=>{const[o,n]=r.dataset.book.split('|');openBook(Number(n),o)});
   bindSearch(v);bindRows(v);
@@ -1374,7 +1386,7 @@ function vClients(v){
   <div class="list">${L.length?L.map(c=>{const o=owe(c);return `<div class="row" data-client="${c.id}"><div class="l"><b>${esc(c.name)}</b><small>${esc(c.phone||'Sans téléphone')}${c.address?' · '+esc(c.address):''}${c.nameVoice?' · 🎙 nom à écouter':''}</small></div><div class="r">${o>0?`<b>${money(o)}</b><small>dû</small>`:'<span class="pill ok">À jour</span>'}</div></div>`}).join(''):'<div class="empty">Aucun client. Ajoutez le premier avec le bouton ci-dessous.</div>'}</div>
   ${L.length?`<button type="button" class="btn line" id="allc" style="margin:12px 0 70px">Enregistrer ${q?'ces '+L.length+' clients':'tous les clients'} dans les contacts du téléphone</button>`:''}
   <button class="btn fab" data-act="newclient">+ Client</button>`;
-  const ab=v.querySelector('#allc');if(ab)ab.onclick=()=>addToContacts(L);
+  const ab=v.querySelector('#allc');if(ab)ab.onclick=()=>openContactPicker(L);
   bindSearch(v);bindRows(v);
 }
 function vStock(v){
@@ -1988,6 +2000,19 @@ async function addToContacts(list){
     toast('Fichier contacts enregistré : ouvrez-le pour ajouter '+(list.length>1?'les '+list.length+' clients':'le client')+' aux contacts');
   }catch(e){if(!e||e.code!=='declined')toast('Contacts : '+String((e&&e.message)||e).slice(0,110))}
 }
+function openContactPicker(list){
+  const L=list.filter(c=>phoneIntl(c.phone)).sort((a,b)=>a.name.localeCompare(b.name));
+  if(!L.length){toast('Aucun client avec un numéro valide');return}
+  sheet('Choisir les contacts',`<p class="note" style="margin-top:0">Décochez les clients que vous ne voulez pas dans vos contacts, puis touchez le bouton en bas.</p>
+    <div style="display:flex;gap:8px;margin-bottom:8px"><button type="button" class="btn sec2 sm" id="cpa">Tout cocher</button><button type="button" class="btn sec2 sm" id="cpn">Tout décocher</button></div>
+    <div class="list" id="cpl">${L.map(c=>`<label class="row" style="cursor:pointer;display:flex;align-items:center;gap:10px"><input type="checkbox" data-c="${c.id}" checked style="width:22px;height:22px;flex:none"><div class="l"><b>${esc(c.name)}</b><small>${esc(phoneShow(c.phone))}</small></div></label>`).join('')}</div>
+    <div style="height:14px"></div><button class="btn" id="cpg"></button>`,(el,o)=>{
+    const cs=()=>[...el.querySelectorAll('[data-c]')],upd=()=>{const n=cs().filter(x=>x.checked).length;const b=$('#cpg',el);b.textContent='Ajouter '+n+' contact'+(n>1?'s':'')+' au téléphone';b.disabled=!n};
+    el.addEventListener('change',upd);$('#cpa',el).onclick=()=>{cs().forEach(x=>x.checked=true);upd()};$('#cpn',el).onclick=()=>{cs().forEach(x=>x.checked=false);upd()};
+    $('#cpg',el).onclick=()=>{const ids=new Set(cs().filter(x=>x.checked).map(x=>x.dataset.c));o.close();addToContacts(L.filter(c=>ids.has(c.id)))};
+    upd();
+  });
+}
 async function saveClientGeo(id,done){
   try{
     toast('Recherche de la position… patientez quelques secondes');
@@ -2041,12 +2066,16 @@ function openClient(id){
     <button type="button" class="btn sec2" id="setgeo" style="margin-top:10px">📍 ${cc.lat!=null?'Mettre à jour la position GPS (je suis chez le client)':'Enregistrer la position GPS (je suis chez le client)'}</button>
     ${cc.lat!=null?`<p class="note" style="margin:4px 0 0">Position GPS enregistrée le ${fdate(String(cc.geoAt||'').slice(0,10))} · précision ${cc.acc||'?'} m</p>`:''}
     ${cc.geo||cc.address||cc.city?`<a class="btn sec2" style="display:block;text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="${esc(cc.geo||('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent([cc.address,cc.city,'Sénégal'].filter(Boolean).join(', '))))}">${cc.geo?'Ouvrir la position du client':'Chercher l\'adresse sur la carte'}</a>`:'<p class="note">Aucune localisation. Touchez « Modifier » pour l\'ajouter.</p>'}
+    ${phoneIntl(cc.phone)&&comp().waGroup?'<button type="button" class="btn sec2" id="wag" style="margin-top:10px">Inviter au groupe WhatsApp</button>':''}
     <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="ns">Nouvelle vente</button><button class="btn line" id="ed">Modifier</button></div>
+    ${ME.isAdmin&&!S.sales.some(s=>s.clientId===id)?'<button type="button" class="btn danger" id="delc" style="margin-top:10px">Supprimer ce client</button>':''}
     <div class="sec"><h2>Historique</h2><span>${L.length}</span></div>
     <div class="list">${L.length?L.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>${esc(ref(x.s))}</b><small>${fdate(x.s.date)} · ${trLabel(x.s)} · ${esc(sellerOf(x.s))}</small></div><div class="r"><b>${money(x.s.total)}</b><span class="pill ${stPill(x.st.status)}">${x.st.status}</span></div></div>`).join(''):'<div class="empty">Aucun achat.</div>'}</div>`);
     $('#ns',o.el).onclick=()=>openNewSale(id);$('#ed',o.el).onclick=()=>openClientForm(id);
     const ac=$('#addc',o.el);if(ac)ac.onclick=()=>addToContacts([cc]);
     $('#setgeo',o.el).onclick=()=>saveClientGeo(id,draw);
+    const dc=$('#delc',o.el);if(dc)dc.onclick=async()=>{if(!confirm('Supprimer le client « '+cc.name+' » ? Il n\'a aucune vente.'))return;try{await delDoc('clients',id);await logAct('Client supprimé',cc.name);toast('Client supprimé');o.close()}catch(e){toast('Suppression impossible')}};
+    const wg=$('#wag',o.el);if(wg)wg.onclick=()=>{const ph=phoneIntl(cc.phone),g=comp().waGroup;window.open('https://wa.me/'+ph+'?text='+encodeURIComponent('Bonjour '+cc.name+', rejoignez le groupe WhatsApp SenAfterPay pour recevoir nos nouveautés et rappels : '+g),'_blank')};
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
   }
   draw();
@@ -2154,9 +2183,11 @@ function openBook(n,o_){
       <div class="tot"><span>Pages utilisées</span><b>${b.used} / ${PAGES}</b></div><div class="bar" aria-hidden="true"><i style="width:${Math.round(b.used/PAGES*100)}%"></i></div>
       <p class="note">${free.length?'Pages libres : '+ranges.map(r=>r[0]===r[1]?'P'+r[0]:'P'+r[0]+' à P'+r[1]).join(', '):'Facture complète.'}</p>
       ${ME.isAdmin&&names.length?`<label for="bc">Changer le chef</label><div style="display:flex;gap:8px"><select id="bc">${names.map(x=>`<option ${x===b.chief?'selected':''}>${esc(x)}</option>`).join('')}</select><button class="btn sm" id="sc2" style="flex:none">Enregistrer</button></div>`:''}</div>
+    ${ME.isAdmin&&b.used===0?'<button type="button" class="btn danger" id="dbk" style="margin-bottom:10px">Supprimer cette facture vide</button>':''}
     <div class="sec"><h2>Clients et pages</h2><span>${rows.length}</span></div>
     <div class="list">${rows.length?rows.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>P${x.s.page} · ${esc(x.c?x.c.name:'Client')}</b><small>${fdate(x.s.date)} · ${esc(trLabel(x.s))} · ${esc(sellerOf(x.s))}</small></div><div class="r"><b>${money(x.s.total)}</b><span class="pill ${stPill(x.st.status)}">${x.st.status}</span></div></div>`).join(''):'<div class="empty">Aucune page utilisée.</div>'}</div>`);
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
+    const dbk=$('#dbk',o.el);if(dbk)dbk.onclick=async()=>{if(!confirm('Supprimer la facture F'+n+' (vide) ?'))return;try{await deleteBook(n,o_);toast('Facture supprimée');o.close()}catch(e){toast('Suppression impossible')}};
     const st2=$('#st2',o.el);if(st2)st2.onclick=async()=>{const t=val(o.el,'bt').trim();if(!okTel(t)){toast('Numéro obligatoire (9 chiffres)');return}await put('invoices',bkey(o_,n),{...(bookOf(n,o_)||{num:n,owner:o_,created:today()}),chiefTel:t});toast('Téléphone enregistré')};
     const sc=$('#sc2',o.el);if(sc)sc.onclick=async()=>{const nm=val(o.el,'bc'),x=S.staff.find(q=>q.name===nm);const cur=bookOf(n,o_)||{num:n,owner:o_,created:today()};const typed=val(o.el,'bt').trim(),tel=(x&&x.phone)||(typed!==chiefTelOf(n,o_)?typed:'');if(!okTel(tel)){toast('Saisissez le téléphone du nouveau chef puis réessayez');return}await put('invoices',bkey(o_,n),{...cur,chief:nm,chiefTel:tel});await logAct('Chef de facture changé','F'+n+' : '+(b.chief||'—')+' → '+val(o.el,'bc'));toast('Chef enregistré')};
   }
@@ -2630,12 +2661,13 @@ function openCompany(){
   <label for="ka">Adresse</label><input id="ka" value="${esc(c.address)}" placeholder="Ex. Dakar, Sénégal">
   <div class="grid2"><div><label for="kr">NINEA</label><input id="kr" value="${esc(c.ninea)}"></div><div><label for="kc">RCCM</label><input id="kc" value="${esc(c.rccm)}"></div></div>
   <div class="grid2"><div><label for="ke">Email</label><input id="ke" type="email" value="${esc(c.email)}"></div><div><label for="kz">Site web</label><input id="kz" value="${esc(c.website)}" placeholder="www.senafterpay.sn"></div></div>
+  <label for="kg">Lien du groupe WhatsApp des clients</label><input id="kg" type="url" inputmode="url" value="${esc(c.waGroup)}" placeholder="https://chat.whatsapp.com/…">
   <label for="kf">Message en bas des factures</label><input id="kf" value="${esc(c.footer||'Merci de votre confiance.')}">
   <label for="kq">Message de rappel avant échéance (modèle)</label><input id="kq" value="${esc(c.reminder)}" placeholder="Laisser vide pour le message par défaut">
-  <p class="note">Mots à insérer : {nom} {montant} {facture} {tranche} {date}</p>
+  <p class="note">Mots à insérer : {nom} {montant} {produit} {facture} {tranche} {date}</p>
   <div style="height:14px"></div><button class="btn" id="ok">Enregistrer</button>`,(el,o)=>{
     $('#ok',el).onclick=async()=>{
-      await put('settings','company',{website:val(el,'kz').trim(),reminder:val(el,'kq').trim(),name:val(el,'kn').trim()||'SenAfterPay',phone:val(el,'kt').trim(),whatsapp:val(el,'kw').trim(),address:val(el,'ka').trim(),ninea:val(el,'kr').trim(),rccm:val(el,'kc').trim(),email:val(el,'ke').trim(),footer:val(el,'kf').trim()});
+      await put('settings','company',{website:val(el,'kz').trim(),reminder:val(el,'kq').trim(),name:val(el,'kn').trim()||'SenAfterPay',phone:val(el,'kt').trim(),whatsapp:val(el,'kw').trim(),address:val(el,'ka').trim(),ninea:val(el,'kr').trim(),rccm:val(el,'kc').trim(),email:val(el,'ke').trim(),footer:val(el,'kf').trim(),waGroup:val(el,'kg').trim()});
       await logAct('Entreprise modifiée','Coordonnées des documents');toast('Entreprise enregistrée');o.close();
     };
   });
@@ -2795,7 +2827,7 @@ function openVoices(focusKey){
     if(rec&&recKey===k){rec.stop();return}
     if(rec){return}
     try{
-      const st=await navigator.mediaDevices.getUserMedia({audio:true});
+      if(SAPN){try{await SAPN.requestMic()}catch(e){}}const st=await navigator.mediaDevices.getUserMedia({audio:true});
       const types=['audio/webm;codecs=opus','audio/mp4','audio/webm'];const mt=types.find(t=>window.MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t));
       const r=new MediaRecorder(st,mt?{mimeType:mt,audioBitsPerSecond:24000}:{audioBitsPerSecond:24000});const ch=[];
       r.ondataavailable=e=>{if(e.data&&e.data.size)ch.push(e.data)};
@@ -2823,11 +2855,25 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='27-10 · v20 suivi';
+const APP_VER='27-10 · v21 suivi';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
-const speechAPI=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
+const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
 function listenName(btn,onText,onErr){
+  if(SAPN){
+    if(btn._rec){try{SAPN.stopListen()}catch(e){}return}
+    const sp=btn.querySelector('span'),lab=sp?sp.textContent:'',setL=t=>{if(sp)sp.textContent=t};
+    btn._rec=true;btn.classList.add('rec');setL('Je t\'écoute…');onErr('');
+    SAPN.listen().then(r=>{const t=String(r&&r.text||'').trim();if(t)onText(t.replace(/(^|[\s'-])(\p{L})/gu,(m,a,b)=>a+b.toUpperCase()));else onErr('Rien entendu. Touche le micro et dis le nom.')})
+      .catch(e=>{const k=String((e&&(e.message||e.code))||e);
+        if(k==='no-speech')onErr('Rien entendu. Touche le micro et dis le nom.');
+        else if(k==='aborted')onErr('');
+        else if(k==='not-allowed')onErr('Micro refusé : Paramètres du téléphone > Applications > SenAfterPay > Autorisations > Micro.');
+        else if(k==='network')onErr('La voix demande internet. Écris le nom.');
+        else if(btn.onfatal)btn.onfatal(k);else onErr('Voix indisponible. Écris le nom.')})
+      .finally(()=>{btn._rec=null;btn.classList.remove('rec');setL(lab||'Dire le nom')});
+    return;
+  }
   const SR=speechAPI();if(!SR){if(btn.onfatal)btn.onfatal('absent');else onErr('La voix n\'est pas disponible sur ce téléphone. Écris le nom.');return}
   if(btn._rec){try{btn._rec.stop()}catch(e){}return}
   const sp=btn.querySelector('span'),lab=sp?sp.textContent:'',setL=t=>{if(sp)sp.textContent=t};
@@ -2914,7 +2960,7 @@ function openGuided(){
         if(mr){try{mr.stop()}catch(e){}return}
         if(!canRec){err('Le micro ne marche pas ici. Écris le nom.');return}
         try{
-          const st=await navigator.mediaDevices.getUserMedia({audio:true});
+          if(SAPN){try{await SAPN.requestMic()}catch(e){}}const st=await navigator.mediaDevices.getUserMedia({audio:true});
           const types=['audio/webm;codecs=opus','audio/mp4','audio/webm'];const mt=types.find(t=>window.MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t));
           const r=new MediaRecorder(st,mt?{mimeType:mt,audioBitsPerSecond:24000}:{audioBitsPerSecond:24000});const ch=[];let tm;
           r.ondataavailable=e=>{if(e.data&&e.data.size)ch.push(e.data)};
