@@ -606,7 +606,11 @@ jobs:
           }
           SAP_EOF
           cp "$GITHUB_WORKSPACE/logo.png" native/logo.png
-          sed -i "s|__SITE__|${{ inputs.site_url }}|" capacitor.config.json
+      - name: Adresse du site
+        working-directory: android-app
+        env:
+          SITE_URL: ${{ inputs.site_url }}
+        run: sed -i "s|__SITE__|$SITE_URL|" capacitor.config.json
       - name: Préparer Android
         working-directory: android-app
         run: |
