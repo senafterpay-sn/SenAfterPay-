@@ -83,10 +83,13 @@ jobs:
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
               <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
               <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
               <queries>
                   <package android:name="com.whatsapp" />
                   <package android:name="com.whatsapp.w4b" />
+                  <intent><action android:name="android.speech.RecognitionService" /></intent>
               </queries>
           '''
           if 'ACTIVITY_RECOGNITION' not in t:
@@ -254,6 +257,10 @@ jobs:
           import android.media.MediaScannerConnection;
           import android.net.Uri;
           import android.provider.ContactsContract;
+          import android.speech.RecognitionListener;
+          import android.speech.RecognizerIntent;
+          import android.speech.SpeechRecognizer;
+          import java.util.ArrayList;
           import android.os.Build;
           import android.os.Environment;
           import android.provider.MediaStore;
@@ -265,10 +272,13 @@ jobs:
           import androidx.core.content.FileProvider;
 
           import com.getcapacitor.JSObject;
+          import com.getcapacitor.PermissionState;
           import com.getcapacitor.Plugin;
           import com.getcapacitor.PluginCall;
           import com.getcapacitor.PluginMethod;
           import com.getcapacitor.annotation.CapacitorPlugin;
+          import com.getcapacitor.annotation.Permission;
+          import com.getcapacitor.annotation.PermissionCallback;
 
           import java.io.File;
           import java.io.FileOutputStream;
@@ -280,7 +290,10 @@ jobs:
            *  - shareImage : envoie une image directement dans la discussion WhatsApp d'un numéro ;
            *  - notify / notifyPermission : notifications du directeur (alertes de suivi).
            */
-          @CapacitorPlugin(name = "SapShare")
+          @CapacitorPlugin(
+              name = "SapShare",
+              permissions = { @Permission(alias = "mic", strings = { Manifest.permission.RECORD_AUDIO }) }
+          )
           public class SapSharePlugin extends Plugin {
 
               private static final String CHANNEL = "sap_alertes";
@@ -475,6 +488,105 @@ jobs:
                   } catch (Exception e) {
                       call.reject("Fichier contacts impossible : " + e.getMessage());
                   }
+              }
+
+              private SpeechRecognizer sr;
+
+              @PluginMethod
+              public void requestMic(PluginCall call) {
+                  if (getPermissionState("mic") == PermissionState.GRANTED) {
+                      JSObject r = new JSObject();
+                      r.put("granted", true);
+                      call.resolve(r);
+                  } else {
+                      requestPermissionForAlias("mic", call, "micDone");
+                  }
+              }
+
+              @PermissionCallback
+              private void micDone(PluginCall call) {
+                  JSObject r = new JSObject();
+                  r.put("granted", getPermissionState("mic") == PermissionState.GRANTED);
+                  call.resolve(r);
+              }
+
+              @PluginMethod
+              public void listen(PluginCall call) {
+                  if (getPermissionState("mic") != PermissionState.GRANTED) {
+                      requestPermissionForAlias("mic", call, "listenPerm");
+                      return;
+                  }
+                  startListen(call);
+              }
+
+              @PermissionCallback
+              private void listenPerm(PluginCall call) {
+                  if (getPermissionState("mic") == PermissionState.GRANTED) startListen(call);
+                  else call.reject("not-allowed");
+              }
+
+              private void startListen(final PluginCall call) {
+                  final Context ctx = getContext();
+                  getActivity().runOnUiThread(new Runnable() {
+                      @Override
+                      public void run() {
+                          try {
+                              if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
+                                  call.reject("absent");
+                                  return;
+                              }
+                              if (sr != null) {
+                                  try { sr.destroy(); } catch (Exception ignore) { }
+                              }
+                              sr = SpeechRecognizer.createSpeechRecognizer(ctx);
+                              Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                              i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+                              i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "fr-FR");
+                              i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+                              sr.setRecognitionListener(new RecognitionListener() {
+                                  public void onReadyForSpeech(Bundle b) { }
+                                  public void onBeginningOfSpeech() { }
+                                  public void onRmsChanged(float v) { }
+                                  public void onBufferReceived(byte[] b) { }
+                                  public void onEndOfSpeech() { }
+                                  public void onPartialResults(Bundle b) { }
+                                  public void onEvent(int t, Bundle b) { }
+                                  public void onError(int e) {
+                                      String m = "error";
+                                      if (e == SpeechRecognizer.ERROR_NO_MATCH || e == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) m = "no-speech";
+                                      else if (e == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) m = "not-allowed";
+                                      else if (e == SpeechRecognizer.ERROR_NETWORK || e == SpeechRecognizer.ERROR_NETWORK_TIMEOUT) m = "network";
+                                      else if (e == SpeechRecognizer.ERROR_CLIENT) m = "aborted";
+                                      call.reject(m);
+                                      try { sr.destroy(); } catch (Exception ignore) { }
+                                      sr = null;
+                                  }
+                                  public void onResults(Bundle b) {
+                                      ArrayList<String> l = b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                                      JSObject r = new JSObject();
+                                      r.put("text", (l != null && !l.isEmpty()) ? l.get(0) : "");
+                                      call.resolve(r);
+                                      try { sr.destroy(); } catch (Exception ignore) { }
+                                      sr = null;
+                                  }
+                              });
+                              sr.startListening(i);
+                          } catch (Exception e) {
+                              call.reject("error");
+                          }
+                      }
+                  });
+              }
+
+              @PluginMethod
+              public void stopListen(PluginCall call) {
+                  getActivity().runOnUiThread(new Runnable() {
+                      @Override
+                      public void run() {
+                          try { if (sr != null) sr.stopListening(); } catch (Exception ignore) { }
+                      }
+                  });
+                  call.resolve();
               }
           }
           SAP_EOF
