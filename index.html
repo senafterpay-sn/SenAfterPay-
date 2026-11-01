@@ -1372,7 +1372,9 @@ function vClients(v){
   v.innerHTML=`<div class="sec"><h2>Clients</h2><span>${L.length}</span></div>
   <input class="search" id="q" type="search" placeholder="Nom ou téléphone" value="${esc(query)}">
   <div class="list">${L.length?L.map(c=>{const o=owe(c);return `<div class="row" data-client="${c.id}"><div class="l"><b>${esc(c.name)}</b><small>${esc(c.phone||'Sans téléphone')}${c.address?' · '+esc(c.address):''}${c.nameVoice?' · 🎙 nom à écouter':''}</small></div><div class="r">${o>0?`<b>${money(o)}</b><small>dû</small>`:'<span class="pill ok">À jour</span>'}</div></div>`}).join(''):'<div class="empty">Aucun client. Ajoutez le premier avec le bouton ci-dessous.</div>'}</div>
+  ${L.length?`<button type="button" class="btn line" id="allc" style="margin:12px 0 70px">Enregistrer ${q?'ces '+L.length+' clients':'tous les clients'} dans les contacts du téléphone</button>`:''}
   <button class="btn fab" data-act="newclient">+ Client</button>`;
+  const ab=v.querySelector('#allc');if(ab)ab.onclick=()=>addToContacts(L);
   bindSearch(v);bindRows(v);
 }
 function vStock(v){
@@ -1959,6 +1961,41 @@ function setBody(o,html){$('.body',o.el).innerHTML=html}
 const val=(el,id)=>($('#'+id,el)||{}).value||'';
 const num=(el,id)=>Math.max(0,Math.round(Number(String(val(el,id)).replace(/\s/g,'').replace(',','.'))||0));
 
+function getPos(){
+  return new Promise((ok,ko)=>{
+    if(!navigator.geolocation)return ko(new Error('Position non disponible sur ce téléphone'));
+    navigator.geolocation.getCurrentPosition(p=>ok({lat:+p.coords.latitude.toFixed(6),lng:+p.coords.longitude.toFixed(6),acc:Math.round(p.coords.accuracy||0)}),
+      e=>ko(new Error(e.code===1?'Position refusée : autorisez la localisation pour SenAfterPay':'Position introuvable : sortez à l\'air libre et réessayez')),
+      {enableHighAccuracy:true,timeout:20000,maximumAge:5000});
+  });
+}
+const geoUrl=g=>'https://www.google.com/maps?q='+g.lat+','+g.lng;
+function vcard(c){
+  const ph=phoneIntl(c.phone),clean=s=>String(s||'').replace(/[\r\n;,]+/g,' ').trim();
+  return 'BEGIN:VCARD\nVERSION:3.0\nN:;'+clean(c.name)+';;;\nFN:'+clean(c.name)+'\n'+(ph?'TEL;TYPE=CELL:+'+ph+'\n':'')+'ORG:SenAfterPay\nNOTE:'+clean('Client SenAfterPay'+(c.address?' · '+c.address:'')+(c.city?' · '+c.city:''))+'\nEND:VCARD\n';
+}
+async function addToContacts(list){
+  list=list.filter(c=>phoneIntl(c.phone));
+  if(!list.length){toast('Aucun client avec un numéro valide');return}
+  try{
+    if(SAPN){
+      if(list.length===1){const c=list[0];await SAPN.addContact({name:c.name,phone:'+'+phoneIntl(c.phone),company:'SenAfterPay',note:'Client SenAfterPay'+(c.address?' · '+c.address:'')});return}
+      await SAPN.openVcf({name:'clients-senafterpay.vcf',text:list.map(vcard).join('')});
+      toast(list.length+' contacts prêts : choisissez l\'application Contacts puis confirmez l\'import');return;
+    }
+    const blob=new Blob([list.map(vcard).join('')],{type:'text/vcard;charset=utf-8'}),name=list.length===1?'contact-'+list[0].name.replace(/[^\w]+/g,'-')+'.vcf':'clients-senafterpay.vcf';
+    const d=await claude.use('downloads');await d.save({filename:name,data:blob});
+    toast('Fichier contacts enregistré : ouvrez-le pour ajouter '+(list.length>1?'les '+list.length+' clients':'le client')+' aux contacts');
+  }catch(e){if(!e||e.code!=='declined')toast('Contacts : '+String((e&&e.message)||e).slice(0,110))}
+}
+async function saveClientGeo(id,done){
+  try{
+    toast('Recherche de la position… patientez quelques secondes');
+    const g=await getPos(),c=byId(S.clients,id);if(!c)return;
+    await put('clients',id,{...c,lat:g.lat,lng:g.lng,acc:g.acc,geoAt:new Date().toISOString(),geo:geoUrl(g)});
+    toast('Position du client enregistrée (précision '+g.acc+' m)');done&&done();
+  }catch(e){toast(String((e&&e.message)||e).slice(0,130))}
+}
 function openClientForm(id){
   const c=id?byId(S.clients,id):null;
   sheet(c?'Modifier le client':'Nouveau client',`
@@ -1969,10 +2006,15 @@ function openClientForm(id){
     <label for="ca">Quartier et adresse</label><input id="ca" value="${esc(c&&c.address)}" placeholder="Ex. Parcelles Assainies, Unité 15, villa 120">
     <label for="cm">Point de repère</label><input id="cm" value="${esc(c&&c.landmark)}" placeholder="Ex. en face de la pharmacie">
     <label for="cl">Position sur la carte (lien Google Maps)</label><input id="cl" type="url" inputmode="url" value="${esc(c&&c.geo)}" placeholder="https://maps.app.goo.gl/…">
-    <p class="note">Sur place, ouvrez Google Maps, touchez votre position, choisissez Partager puis Copier le lien, et collez-le ici.</p>
+    <button type="button" class="btn sec2" id="cgps" style="margin-top:8px">📍 Enregistrer ma position actuelle (chez le client)</button>
+    <p class="note" id="cgi">${c&&c.lat!=null?'Position enregistrée : '+c.lat+', '+c.lng+(c.acc?' (précision '+c.acc+' m)':''):'À faire quand vous êtes devant la maison du client. Sinon, collez le lien Google Maps ci-dessus.'}</p>
     <label for="cj">Profession</label><input id="cj" value="${esc(c&&c.job)}">
     <label for="ci">Pièce d'identité (facultatif)</label><input id="ci" value="${esc(c&&c.idno)}">
     <p class="note" id="dup"></p><div style="height:14px"></div><button class="btn" id="ok">Enregistrer</button>`,(el,o)=>{
+    let gp=c&&c.lat!=null?{lat:c.lat,lng:c.lng,acc:c.acc}:null;
+    $('#cgps',el).onclick=async()=>{const b=$('#cgps',el);b.disabled=true;$('#cgi',el).textContent='Recherche de la position… patientez';
+      try{gp=await getPos();$('#cl',el).value=geoUrl(gp);$('#cgi',el).textContent='Position trouvée : '+gp.lat+', '+gp.lng+' (précision '+gp.acc+' m). Touchez Enregistrer.'}
+      catch(e){$('#cgi',el).textContent=String((e&&e.message)||e)}b.disabled=false};
     const cm=$('#cmic',el);if(cm)cm.onclick=()=>listenName(cm,t=>{$('#cn',el).value=t;$('#dup',el).textContent=''},m=>{$('#dup',el).textContent=m});
     $('#ok',el).onclick=async()=>{
       const name=val(el,'cn').trim();if(!name){$('#dup',el).textContent='Le nom est obligatoire.';return}
@@ -1981,7 +2023,7 @@ function openClientForm(id){
       const dup=S.clients.find(x=>x.id!==(c&&c.id)&&phone&&x.phone===phone);
       if(dup&&!el.dataset.sure){$('#dup',el).textContent='Attention : '+dup.name+' a déjà ce numéro. Touchez encore « Enregistrer » pour créer quand même.';el.dataset.sure=1;return}
       const nid=c?c.id:uid('c');
-      await put('clients',nid,{...(c||{}),name,phone,city:val(el,'cv').trim(),address:val(el,'ca').trim(),landmark:val(el,'cm').trim(),geo,job:val(el,'cj').trim(),idno:val(el,'ci').trim(),created:c?c.created:today(),agent:c?c.agent:ME.id,incomplete:/^Client\s/.test(name),nameVoice:/^Client\s/.test(name)?((c&&c.nameVoice)||''):''});
+      await put('clients',nid,{...(c||{}),...(gp?{lat:gp.lat,lng:gp.lng,acc:gp.acc,geoAt:(c&&c.geoAt&&c.lat===gp.lat)?c.geoAt:new Date().toISOString()}:{}),name,phone,city:val(el,'cv').trim(),address:val(el,'ca').trim(),landmark:val(el,'cm').trim(),geo,job:val(el,'cj').trim(),idno:val(el,'ci').trim(),created:c?c.created:today(),agent:c?c.agent:ME.id,incomplete:/^Client\s/.test(name),nameVoice:/^Client\s/.test(name)?((c&&c.nameVoice)||''):''});
       toast('Client enregistré');o.close();if(!c&&o.after)o.after(nid);
     };
   });
@@ -1995,12 +2037,16 @@ function openClient(id){
     const L=S.sales.filter(s=>s.clientId===id&&!isCancelled(s)).sort((a,b)=>b.date.localeCompare(a.date)).map(s=>({s,st:saleState(s,P,now)}));
     const owed=L.reduce((a,x)=>a+x.st.balance,0);
     setBody(o,`${cc.nameVoice?`<div class="card" style="margin-bottom:10px"><b>Nom dit à la voix par l'employé</b><audio controls src="${cc.nameVoice}" style="width:100%;margin-top:8px"></audio><p class="note" style="margin:6px 0 0">Écoute, puis touche « Modifier » pour écrire le nom.</p></div>`:''}<div class="card"><div class="tot"><span>Téléphone</span><b>${esc(cc.phone||'—')}</b></div><div class="tot"><span>Ville</span><b style="text-align:right">${esc(cc.city||'—')}</b></div><div class="tot"><span>Adresse</span><b style="text-align:right">${esc(cc.address||'—')}</b></div>${cc.landmark?`<div class="tot"><span>Repère</span><b style="text-align:right">${esc(cc.landmark)}</b></div>`:''}<div class="tot"><span>Profession</span><b>${esc(cc.job||'—')}</b></div><div class="tot g"><span>Reste à payer</span><span>${money(owed)}</span></div></div>
-    ${phoneIntl(cc.phone)?`<div class="acts" style="margin-top:10px"><a href="tel:+${phoneIntl(cc.phone)}">Appeler</a><a class="wa" href="https://wa.me/${phoneIntl(cc.phone)}" target="_blank" rel="noopener">WhatsApp</a><button type="button" data-copy="${esc(cc.name+' +'+phoneIntl(cc.phone))}">Contact</button></div>`:''}
+    ${phoneIntl(cc.phone)?`<div class="acts" style="margin-top:10px"><a href="tel:+${phoneIntl(cc.phone)}">Appeler</a><a class="wa" href="https://wa.me/${phoneIntl(cc.phone)}" target="_blank" rel="noopener">WhatsApp</a><button type="button" id="addc">Ajouter aux contacts</button></div>`:''}
+    <button type="button" class="btn sec2" id="setgeo" style="margin-top:10px">📍 ${cc.lat!=null?'Mettre à jour la position GPS (je suis chez le client)':'Enregistrer la position GPS (je suis chez le client)'}</button>
+    ${cc.lat!=null?`<p class="note" style="margin:4px 0 0">Position GPS enregistrée le ${fdate(String(cc.geoAt||'').slice(0,10))} · précision ${cc.acc||'?'} m</p>`:''}
     ${cc.geo||cc.address||cc.city?`<a class="btn sec2" style="display:block;text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="${esc(cc.geo||('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent([cc.address,cc.city,'Sénégal'].filter(Boolean).join(', '))))}">${cc.geo?'Ouvrir la position du client':'Chercher l\'adresse sur la carte'}</a>`:'<p class="note">Aucune localisation. Touchez « Modifier » pour l\'ajouter.</p>'}
     <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="ns">Nouvelle vente</button><button class="btn line" id="ed">Modifier</button></div>
     <div class="sec"><h2>Historique</h2><span>${L.length}</span></div>
     <div class="list">${L.length?L.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>${esc(ref(x.s))}</b><small>${fdate(x.s.date)} · ${trLabel(x.s)} · ${esc(sellerOf(x.s))}</small></div><div class="r"><b>${money(x.s.total)}</b><span class="pill ${stPill(x.st.status)}">${x.st.status}</span></div></div>`).join(''):'<div class="empty">Aucun achat.</div>'}</div>`);
     $('#ns',o.el).onclick=()=>openNewSale(id);$('#ed',o.el).onclick=()=>openClientForm(id);
+    const ac=$('#addc',o.el);if(ac)ac.onclick=()=>addToContacts([cc]);
+    $('#setgeo',o.el).onclick=()=>saveClientGeo(id,draw);
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
   }
   draw();
@@ -2259,6 +2305,17 @@ function openNewSale(clientId){
 function openClientFormThen(cb){openClientForm();const o=stack[stack.length-1];o.after=cb;return o}
 
 /* ========= Détail d'une vente, paiements, annulations ========= */
+const pslug=n=>'pimg_'+String(n||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+const lineImg=l=>{const p=byId(S.products,l.productId||l.pid);if(p&&p.img)return p.img;const d=S.settings.find(x=>x.id===pslug(l.name));return d&&d.img||l.img||''};
+/* Une seule photo par nom de produit (document « settings ») : elle s'applique à toutes les factures de ce produit. */
+async function setLineImg(sid,li,img){
+  const s=byId(S.sales,sid);if(!s||!s.lines[li])return;
+  const l=s.lines[li];
+  await put('settings',pslug(l.name),{name:l.name,img,at:new Date().toISOString(),by:ME.id||''});
+  const p=l.productId&&byId(S.products,l.productId);if(p)await put('products',p.id,{...p,img});
+  const n=S.sales.filter(x=>x.lines.some(m=>pslug(m.name)===pslug(l.name))).length;
+  toast('Photo enregistrée pour « '+l.name+' » sur '+n+' facture'+(n>1?'s':''));
+}
 function openSale(id){
   const o=sheet('Vente',  '',(el,o)=>{o.refresh=draw});
   function draw(){
@@ -2270,7 +2327,7 @@ function openSale(id){
     o.el.querySelector('h2').textContent=ref(s);
     setBody(o,`${canc?`<div class="note" style="color:var(--bad);font-weight:700;margin-top:0">Vente annulée le ${fdate(cr&&cr.date)}${cr&&cr.reason?' · motif : '+esc(cr.reason):''}</div>`:''}
     <div class="card"><b>${esc(c?c.name:'Client')}</b><div class="note" style="margin:2px 0 8px">${fdate(s.date)} · Vendeur : ${esc(sellerOf(s))} · Chef : ${esc(chiefOf(s))} · <span class="pill ${stPill(st.status)}">${st.status}</span></div>
-      <div class="scroll"><table class="tbl"><tbody>${s.lines.map(l=>`<tr><td>${esc(l.name)}</td><td class="n">${l.qty} × ${nf.format(l.price).replace(/[  ]/g,' ')}${l.listPrice&&l.listPrice!==l.price?'<br><small style="color:var(--mute)">catalogue '+money(l.listPrice)+'</small>':''}</td><td class="n">${money(l.qty*l.price)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="scroll"><table class="tbl"><tbody>${s.lines.map((l,li)=>{const im=lineImg(l);return `<tr><td>${im?`<img src="${im}" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px;display:block;margin-bottom:4px">`:''}${esc(l.name)}<br><button type="button" class="btn sec2 sm" data-lph="${li}" style="margin-top:4px;padding:5px 10px;font-size:12px">${im?'Changer la photo':'📷 Ajouter la photo'}</button></td><td class="n">${l.qty} × ${nf.format(l.price).replace(/[  ]/g,' ')}${l.listPrice&&l.listPrice!==l.price?'<br><small style="color:var(--mute)">catalogue '+money(l.listPrice)+'</small>':''}</td><td class="n">${money(l.qty*l.price)}</td></tr>`}).join('')}</tbody></table></div><input type="file" id="lphf" accept="image/*" style="display:none">
       <div class="tot g"><span>Total</span><span>${money(s.total)}</span></div>
       <div class="tot"><span>Déjà payé</span><b style="color:var(--ok)">${money(st.paid)}</b></div>
       <div class="tot"><span>Reste à payer</span><b>${money(st.balance)}</b></div></div>
@@ -2287,6 +2344,9 @@ function openSale(id){
     <div class="list">${mine.length?mine.map(p=>`<div class="row" data-pay="${p.id}"><div class="l"><b>${esc(p.number)}</b><small>${fdate(p.date)} · ${esc(p.method)}${p.ref?' · '+esc(p.ref):''} · ${esc(agentOf(p))}</small></div><div class="r"><b style="${p.status==='annulé'?'text-decoration:line-through;color:var(--mute)':''}">${money(p.amount)}</b>${p.status==='annulé'?'<span class="pill bad">Annulé</span>':p.method!=='Espèces'?'<span class="pill warn">À vérifier</span>':'<span class="pill ok">Reçu</span>'}</div></div>`).join(''):'<div class="empty">Aucun paiement.</div>'}</div>
     <div style="height:12px"></div><button class="btn sec2" id="inv">Voir la facture</button>${ME.isAdmin&&!canc?'<button class="btn danger" id="cs" style="margin-top:10px">Annuler cette vente</button>':''}`);
     const csb=$('#cs',o.el);if(csb)csb.onclick=()=>openCancelSale(id);
+    let lpi=-1;const lf=$('#lphf',o.el);
+    o.el.querySelectorAll('[data-lph]').forEach(b=>b.onclick=()=>{lpi=+b.dataset.lph;lf.value='';lf.click()});
+    lf.onchange=async()=>{const f=lf.files&&lf.files[0];if(!f||lpi<0)return;try{await setLineImg(id,lpi,await readImage(f,480))}catch(e){toast('Photo non enregistrée : '+String((e&&e.message)||e).slice(0,90))}};
     o.el.querySelectorAll('[data-pay]').forEach(r=>r.onclick=()=>openPayment(r.dataset.pay));
     $('#inv',o.el).onclick=()=>openInvoice(id);
     const pb=$('#pay',o.el);
@@ -2397,7 +2457,7 @@ async function sendInvoiceImage(el,s,c,st){
 const loadImg=src=>new Promise(r=>{if(!src)return r(null);const i=new Image();i.onload=()=>r(i);i.onerror=()=>r(null);i.src=src});
 async function reminderImage(e){
   const s=e.sale,c=e.client,d=daysUntil(e.due,today()),late=d<0,W=800,P=40;
-  const prods=[];(s.lines||[]).forEach(l=>{const p=byId(S.products,l.productId||l.pid);prods.push({name:l.name,qty:l.qty,img:p&&p.img||''})});
+  const prods=[];(s.lines||[]).forEach(l=>{const p=byId(S.products,l.productId||l.pid);prods.push({name:l.name,qty:l.qty,img:l.img||p&&p.img||''})});
   const shown=prods.slice(0,3),imgs=await Promise.all(shown.map(p=>loadImg(p.img)));
   const n=shown.length||1,box=n===1?420:n===2?330:220,gap=20,rowW=n*box+(n-1)*gap,top=170,nameH=88;
   const H=top+box+nameH+420,cv=document.createElement('canvas');cv.width=W;cv.height=H;const g=cv.getContext('2d');
@@ -2763,7 +2823,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='27-10 · v19 suivi';
+const APP_VER='27-10 · v20 suivi';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
