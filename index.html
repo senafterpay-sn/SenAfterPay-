@@ -2204,6 +2204,12 @@ function openNewSale(clientId){
   const w={clientId:clientId||'',lines:[{pid:'',qty:1,price:null}],type:'cash',sched:[]};
   sheet('Nouvelle vente',`
     <label for="sc">Client *</label><select id="sc"></select>
+    <div id="ncx" class="card" hidden style="margin-top:8px"><b>Nouveau client</b>
+      <label for="ncn">Nom complet *</label><input id="ncn" autocomplete="off" autocapitalize="words">
+      <label for="ncp">Téléphone</label><input id="ncp" type="tel" inputmode="tel" placeholder="77 123 45 67">
+      <div style="display:flex;gap:8px;margin-top:10px"><button type="button" class="btn" id="ncok">Enregistrer le client</button><button type="button" class="btn line" id="ncno">Annuler</button></div>
+      <p class="note" id="nce" style="color:var(--bad)"></p></div>
+    <div id="sgp" style="margin:8px 0 0"></div>
     <label for="sv">Employé qui a vendu *</label><select id="sv"></select>
     <label for="sb">Facture</label><select id="sb"></select>
     <div id="nbx" hidden><label for="sch">Chef de la nouvelle facture</label><select id="sch"></select><label for="nct">Téléphone du chef (obligatoire)</label><input id="nct" inputmode="tel" placeholder="77 123 45 67"></div><div id="nbt" hidden><label for="nbp">Téléphone du chef de cette facture (obligatoire)</label><input id="nbp" inputmode="tel" placeholder="77 123 45 67"></div>
@@ -2227,7 +2233,8 @@ function openNewSale(clientId){
     <p class="note" id="err" style="color:var(--bad)"></p>
     <div style="height:10px"></div><button class="btn" id="ok">Valider la vente</button>`,(el,o)=>{
     const sel=$('#sc',el);
-    const fillClients=(pick)=>{sel.innerHTML='<option value="">Choisir un client…</option>'+S.clients.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(c=>`<option value="${c.id}">${esc(c.name)}${c.phone?' · '+esc(c.phone):''}</option>`).join('')+'<option value="__new">+ Nouveau client</option>';sel.value=pick||'';w.clientId=sel.value};
+    const extra=[];
+    const fillClients=(pick)=>{sel.innerHTML='<option value="">Choisir un client…</option>'+S.clients.concat(extra.filter(x=>!S.clients.some(c=>c.id===x.id))).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(c=>`<option value="${c.id}">${esc(c.name)}${c.phone?' · '+esc(c.phone):''}</option>`).join('')+'<option value="__new">+ Nouveau client</option>';sel.value=pick||'';w.clientId=sel.value};
     const sv=$('#sv',el);
     function fillSellers(keep){
       const names=S.staff.filter(x=>x.active!==false).map(x=>x.name);
@@ -2255,7 +2262,25 @@ function openNewSale(clientId){
     sb.onchange=()=>fillBooks(sb.value);sb.onfocus=()=>fillBooks(sb.value);
     fillBooks();
     fillClients(w.clientId);
-    sel.onchange=()=>{if(sel.value==='__new'){openClientFormThen(id=>setTimeout(()=>fillClients(id),500));sel.value=''}w.clientId=sel.value};
+    // position GPS du client (on est chez lui au moment de la vente)
+    const sg=$('#sgp',el);
+    const sgDraw=()=>{sg.innerHTML=w.pos?`<p class="note" style="margin:0;color:var(--ok)">📍 Position du client enregistrée (précision ${w.pos.acc} m)</p>`:`<button type="button" class="btn sec2 sm" id="sgb" ${w.posBusy?'disabled':''}>📍 ${w.posBusy?'Recherche de la position…':'Enregistrer la position du client (je suis chez lui)'}</button>${w.posErr?`<p class="note" style="color:var(--bad);margin:4px 0 0">${esc(w.posErr)}</p>`:''}`;const b=$('#sgb',el);if(b)b.onclick=()=>{w.posManual=true;sgGet()}};
+    const sgGet=()=>{w.posBusy=1;w.posErr='';sgDraw();getPos().then(p=>{w.pos=p}).catch(e=>{w.posErr=String((e&&e.message)||e)}).finally(()=>{w.posBusy=0;if(document.body.contains(sg))sgDraw()})};
+    sgDraw();sgGet();
+    // créer un client sans quitter la vente
+    sel.onchange=()=>{if(sel.value==='__new'){$('#ncx',el).hidden=false;sel.value='';w.clientId='';setTimeout(()=>$('#ncn',el).focus(),50);return}$('#ncx',el).hidden=true;w.clientId=sel.value};
+    $('#ncno',el).onclick=()=>{$('#ncx',el).hidden=true};
+    $('#ncok',el).onclick=async()=>{
+      const name=val(el,'ncn').trim(),phone=val(el,'ncp').trim(),ne=$('#nce',el);ne.textContent='';
+      if(!name){ne.textContent='Écrivez le nom du client.';return}
+      const dup=phone&&S.clients.concat(extra).find(x=>x.phone===phone);
+      if(dup){fillClients(dup.id);$('#ncx',el).hidden=true;toast('Ce numéro existe déjà : '+dup.name);return}
+      const nid=uid('c'),nc={name,phone,city:'',address:'',landmark:'',geo:'',job:'',idno:'',created:today(),agent:ME.id,incomplete:false,...(w.pos?{lat:w.pos.lat,lng:w.pos.lng,acc:w.pos.acc,geoAt:new Date().toISOString(),geo:geoUrl(w.pos)}:{})};
+      const b=$('#ncok',el);b.disabled=true;
+      try{await put('clients',nid,nc);extra.push({id:nid,...nc});fillClients(nid);$('#ncx',el).hidden=true;$('#ncn',el).value='';$('#ncp',el).value='';toast('Client enregistré')}
+      catch(e){ne.textContent='Non enregistré : '+String((e&&e.message)||e).slice(0,100)}
+      b.disabled=false;
+    };
     const catalog=p=>w.type==='credit'?(p.creditPrice||p.price):p.price;
     // Le dirigeant peut changer le prix d'une ligne ; sinon le prix du catalogue (comptant ou crédit) s'applique.
     const unit=l=>{const p=byId(S.products,l.pid);return l.price!=null?l.price:(p?catalog(p):0)};
@@ -2323,7 +2348,8 @@ function openNewSale(clientId){
       let slot;
       try{const pb=sb.value==='new'?{n:null,o:ME.id||''}:bk_(sb.value),prefB=pb.n;const inherit=sb.value==='new'?(sch.value||seller):((bookOf(prefB,pb.o)||{}).chief||seller);if(prefB!=null&&!chiefTelOf(prefB,pb.o)){const bk=bookOf(prefB,pb.o)||{num:prefB,owner:pb.o,created:today()};await put('invoices',bkey(pb.o,prefB),{...bk,chiefTel:telV})}slot=await takePage(prefB,inherit,sid,telV,pb.o)}
       catch(e){console.warn('takePage',e);err.textContent='Impossible d\'attribuer une page de facture. '+whyFail(e);$('#ok',el).disabled=false;return}
-      await put('sales',sid,{number:num_,date,clientId:w.clientId,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller,lines,total:t,type:w.type,deposit:dep,months:sorted.length,schedule:sorted,created:new Date().toISOString()});
+      await put('sales',sid,{number:num_,date,clientId:w.clientId,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller,lines,total:t,type:w.type,deposit:dep,months:sorted.length,schedule:sorted,created:new Date().toISOString(),...(w.pos?{lat:w.pos.lat,lng:w.pos.lng,acc:w.pos.acc}:{})});
+      if(w.pos){const cc=byId(S.clients,w.clientId)||extra.find(x=>x.id===w.clientId);if(cc&&(cc.lat==null||w.posManual)){try{const{id:_i,...rest}=cc;await put('clients',cc.id,{...rest,lat:w.pos.lat,lng:w.pos.lng,acc:w.pos.acc,geoAt:new Date().toISOString(),geo:geoUrl(w.pos)})}catch(e){}}}
       const method=val(el,'mm'),ref=val(el,'mr').trim();
       const amt=w.type==='credit'?dep:t;
       if(amt>0)await put('payments',uid('y'),{number:nextNumber('R'),saleId:sid,clientId:w.clientId,amount:amt,kind:w.type==='credit'?'acompte':'comptant',method,ref,collector:ME.isAdmin?DIRECT:seller,date:today(),time:new Date().toISOString(),agent:ME.id,byAdmin:ME.isAdmin});
@@ -2480,7 +2506,9 @@ async function sendInvoiceImage(el,s,c,st){
   const name='facture-'+ref(s)+'.png',ph=phoneIntl(c&&c.phone);
   try{
     toast('Création de l\'image…');
-    const blob=await invoiceImage(el),r=await deliverImage(blob,name,{phone:ph,text:invoiceText(s,c,st),title:'Facture '+ref(s)});
+    const tmp=document.createElement('div');tmp.style.cssText='position:fixed;left:-10000px;top:0;width:800px;background:#fff';tmp.innerHTML=invoiceHTML(s,c,st);document.body.appendChild(tmp);
+    let blob;try{blob=await invoiceImage(tmp.querySelector('.fx'))}finally{tmp.remove()}
+    const r=await deliverImage(blob,name,{phone:ph,text:invoiceText(s,c,st),title:'Facture '+ref(s)});
     if(deliverMsg[r])toast((ph?'':'Pas de numéro WhatsApp · ')+deliverMsg[r]);
   }catch(e){toast('Image impossible à créer sur ce téléphone')}
 }
@@ -2534,8 +2562,11 @@ function openInvoice(sid){
     <label for="fc">Chef de facture</label><select id="fc"><option value="">Choisir…</option>${names.map(n=>`<option ${n===bk.chief?'selected':''}>${esc(n)}</option>`).join('')}</select>
     <label for="ft">Téléphone du chef (obligatoire)</label><input id="ft" inputmode="tel" value="${esc(chiefTelOf(s.fnum,ow(s)))}" placeholder="77 123 45 67">
     <p class="note" id="ferr" style="color:var(--bad)"></p><button class="btn" id="fs">Enregistrer et mettre à jour la facture</button></div>`:'';
-  const o=sheet('Facture '+ref(s),fix+invoiceHTML(s,c,st)+`<div style="display:flex;gap:8px;margin-top:12px"><button class="btn" id="pi">Envoyer la facture</button></div><p class="note">« Envoyer la facture » crée une image de la facture. Si le client a un numéro, le téléphone ouvre le partage : choisissez WhatsApp. Sans numéro, l'image est enregistrée dans la galerie.</p>`,(el)=>{
-    $('#pi',el).onclick=()=>sendInvoiceImage($('.fx',el),s,c,st);
+  const o=sheet('Facture '+ref(s),fix+'<div class="fxv"><div class="fxs">'+invoiceHTML(s,c,st)+'</div></div>'+`<div style="display:flex;gap:8px;margin-top:12px"><button class="btn" id="pi">Envoyer la facture</button></div><p class="note">« Envoyer la facture » crée une image de la facture. Si le client a un numéro, le téléphone ouvre le partage : choisissez WhatsApp. Sans numéro, l'image est enregistrée dans la galerie.</p>`,(el)=>{
+    const fxv=$('.fxv',el),fxs=$('.fxs',el);
+    const fit=()=>{const k=Math.min(1,fxv.clientWidth/800);fxs.style.transform='scale('+k+')';fxv.style.height=Math.ceil(fxs.offsetHeight*k)+'px'};
+    fit();setTimeout(fit,120);setTimeout(fit,500);window.addEventListener('resize',fit);
+    $('#pi',el).onclick=()=>sendInvoiceImage(null,s,c,st);
     const fs=$('#fs',el);
     if(fs)fs.onclick=async()=>{const nm=val(el,'fc'),t=val(el,'ft').trim();
       if(!nm){$('#ferr',el).textContent='Choisissez le chef de facture.';return}
@@ -2855,7 +2886,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='27-10 · v21 suivi';
+const APP_VER='27-10 · v22 suivi';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -3020,8 +3051,12 @@ function openGuided(){
       const payNow=g.type==='credit'?g.dep:t;
       shell(`<div class="gd-card"><div class="row2"><span>${esc(g.client.name)}</span><b>${g.qty} × ${esc(p.name)}</b></div><div class="tot2">${fmtN(t)} FCFA</div>
         ${g.type==='credit'?`<div class="row2"><span>Acompte</span><b>${fmtN(g.dep)}</b></div>${sch.map(e=>`<div class="row2"><span>${e.n}. ${fdate(e.due)}</span><b>${fmtN(e.amount)}</b></div>`).join('')}`:`<div class="row2"><span>Comptant</span><b>${esc(g.method)}</b></div>`}</div>
-        <div class="gd-err" id="ge"></div><button type="button" class="gd-ok" id="go" aria-label="Valider la vente">${gsvg('ok')}</button><button type="button" class="gd-no" id="gx">Recommencer</button>`);
-      $('#gx',o.el).onclick=()=>{g.client=null;g.pid='';g.type='';g.price=0;go('phone')};
+        <div class="gd-err" id="gp" style="font-weight:600;color:var(--ink)"></div><div class="gd-err" id="ge"></div><button type="button" class="gd-ok" id="go" aria-label="Valider la vente">${gsvg('ok')}</button><button type="button" class="gd-no" id="gx">Recommencer</button>`);
+      const gpEl=$('#gp',o.el);
+      const gpDraw=()=>{gpEl.innerHTML=g.pos?'📍 Position du client enregistrée (±'+g.pos.acc+' m)':g.posBusy?'📍 Recherche de la position…':'<button type="button" class="gd-no" id="gpb">📍 Enregistrer la position du client</button>'+(g.posErr?'<div style="color:var(--bad)">'+esc(g.posErr)+'</div>':'');const b=$('#gpb',o.el);if(b)b.onclick=()=>{g.posTried=1;gpGet()}};
+      const gpGet=()=>{g.posBusy=1;g.posErr='';gpDraw();getPos().then(p=>{g.pos=p}).catch(e=>{g.posErr=String((e&&e.message)||e)}).finally(()=>{g.posBusy=0;if(document.body.contains(gpEl))gpDraw()})};
+      gpDraw();if(!g.pos&&!g.posBusy&&!g.posTried){g.posTried=1;gpGet()}
+      $('#gx',o.el).onclick=()=>{g.client=null;g.pid='';g.type='';g.price=0;g.pos=null;g.posTried=0;go('phone')};
       $('#go',o.el).onclick=async()=>{
         const ge=$('#ge',o.el),btn=$('#go',o.el);ge.textContent='';
         if(stockOf(p.id)<g.qty){ge.textContent='Stock insuffisant.';return}
@@ -3034,10 +3069,11 @@ function openGuided(){
         try{slot=await takePage(bk?bk.num:null,bk?bk.chief:g.seller,sid,tel,bk?bk.owner:(ME.id||''))}catch(e){console.warn('takePage',e);ge.textContent=whyFail(e);btn.disabled=false;return}
         const date=today(),u=unit(),lines=[{productId:p.id,name:p.name,qty:g.qty,price:u,listPrice:cat()}];
         if(u!==cat())await logAct('Prix modifié','F'+slot.f+'P'+slot.p+' · '+p.name+' : '+fmtN(cat())+' → '+fmtN(u));
-        await put('sales',sid,{number:num_,date,clientId:g.client.id,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller:g.seller,lines,total:t,type:g.type,deposit:g.type==='credit'?g.dep:0,months:sch.length||0,schedule:sch,created:new Date().toISOString(),guided:true});
+        await put('sales',sid,{number:num_,date,clientId:g.client.id,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller:g.seller,lines,total:t,type:g.type,deposit:g.type==='credit'?g.dep:0,months:sch.length||0,schedule:sch,created:new Date().toISOString(),guided:true,...(g.pos?{lat:g.pos.lat,lng:g.pos.lng,acc:g.pos.acc}:{})});
+        if(g.pos){const cc=byId(S.clients,g.client.id);if(cc&&cc.lat==null){try{await put('clients',cc.id,{...cc,lat:g.pos.lat,lng:g.pos.lng,acc:g.pos.acc,geoAt:new Date().toISOString(),geo:geoUrl(g.pos)})}catch(e){}}}
         if(payNow>0)await put('payments',uid('y'),{number:nextNumber('R'),saleId:sid,clientId:g.client.id,amount:payNow,kind:g.type==='credit'?'acompte':'comptant',method:g.method,ref:'',collector:ME.isAdmin?DIRECT:g.seller,date,time:new Date().toISOString(),agent:ME.id,byAdmin:ME.isAdmin});
         await put('moves',uid('m'),{productId:p.id,qty:-g.qty,type:'vente',date,note:num_,agent:ME.id});
-        g.ref='F'+slot.f+'P'+slot.p;g.sid=sid;g.step='done';draw();playVoice('done');
+        g.ref='F'+slot.f+'P'+slot.p;g.sid=sid;g.pos=null;g.posTried=0;g.step='done';draw();playVoice('done');
       };
     }else if(st==='done'){
       shell(`<div class="gd-done"><div class="chk">${gsvg('ok')}</div><div class="ref">${esc(g.ref)}</div></div><button type="button" class="btn" id="gv2">Voir la facture</button><button type="button" class="gd-ok" id="gn2" aria-label="Nouvelle vente">${gsvg('cash')}</button>`,{noback:true});
@@ -3110,8 +3146,8 @@ function receiptHTML(p,s,c,st,cn){
   </tbody></table>${cn?`<p><small>Annulé le ${fdate(cn.date)} : ${esc(cn.reason)}</small></p>`:''}
   ${p.method!=='Espèces'&&p.status!=='annulé'?'<p><small>Paiement mobile ou bancaire déclaré, à vérifier auprès de l\'opérateur.</small></p>':''}</div>`;
 }
-const FXCSS='<style>.fx{background:#fff;color:#0b1f66;font:14px/1.4 system-ui,-apple-system,sans-serif;border:1px solid #dfe2ee;border-radius:12px;padding:16px;overflow:hidden}.fx *{box-sizing:border-box}.fx-top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:10px}.fx-logo{height:60px;width:auto;max-width:100%}.fx-ids{margin:12px 0 0;font-size:13px}.fx-ids div{display:flex;gap:8px;align-items:center;margin:4px 0}.fx-ids svg,.fx-foot svg{width:16px;height:16px;flex:none;stroke:#0b1f66;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.fx-title{font:800 22px system-ui,sans-serif;border-bottom:3px solid #f2b705;padding-bottom:2px;text-align:right;white-space:nowrap}.fx-title small{display:block;font:600 12px system-ui;color:#5a6486;border:0;margin-top:2px}.fx-boxes{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:4px 14px}.fx-box{border:1px solid #0b1f66;border-radius:10px;padding:22px 12px 6px;position:relative;margin-top:16px}.fx-tab{position:absolute;top:-1px;left:-1px;background:#0b1f66;color:#fff;border-radius:10px 0 10px 0;padding:3px 12px;font-weight:700;font-size:12.5px}.fx-row em{font-style:normal}.fx-row .nw,.fx-row em.nw{white-space:nowrap}.fx-row{flex-wrap:wrap;display:flex;gap:6px;align-items:baseline;border-bottom:1px solid #8a93b8;padding:5px 0;font-size:13px;min-height:28px}.fx-row:last-child{border-bottom:0}.fx-row b{font-weight:400;flex:none}.fx-row span{flex:1;font-weight:700;overflow-wrap:anywhere}.fx table{width:100%;border-collapse:collapse;margin-top:18px}.fx th{background:#0b1f66;color:#fff;padding:7px 6px;font-size:13px;border:1px solid #0b1f66}.fx td{border:1px solid #0b1f66;padding:5px 6px;height:30px;font-size:13px}.fx .n{text-align:right;white-space:nowrap}.fx .c{text-align:center}.fx-wrap{overflow-x:auto}.fx-foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 16px;margin-top:18px;border-top:1px solid #dfe2ee;padding-top:10px;font-size:12px}.fx-foot span{display:flex;gap:6px;align-items:center}.fx-note{font-size:11px;color:#5a6486;margin:8px 0 0;text-align:center}</style>';
-const FXI={pin:'<svg viewBox="0 0 24 24"><path d="M12 22s7-6.2 7-12a7 7 0 10-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>',bld:'<svg viewBox="0 0 24 24"><path d="M4 21V8l8-5 8 5v13zM9 21v-5h6v5M8 11h2M14 11h2"/></svg>',tel:'<svg viewBox="0 0 24 24"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 005 5L15 13l5 2v4a2 2 0 01-2 2A16 16 0 013 6a2 2 0 012-2z"/></svg>',mail:'<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>',web:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>'};
+const FXCSS='<style>.fx{width:800px;background:#fff;color:#0b2a7a;font:15px/1.35 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;border:1px solid #d9dce8;padding:26px 30px 18px}.fx *{box-sizing:border-box}.fx-top{display:flex;justify-content:space-between;align-items:flex-end;gap:12px}.fx-logo{height:92px;width:auto;display:block}.fx-ids{margin:10px 0 0;font-size:15px}.fx-ids div{display:flex;gap:10px;align-items:center;margin:3px 0}.fx-ids svg,.fx-foot svg{width:20px;height:20px;flex:none;stroke:#0b2a7a;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.fx-title{font:800 34px system-ui,sans-serif;border-bottom:4px solid #f2b705;padding-bottom:3px;text-align:right;white-space:nowrap;margin-bottom:6px}.fx-title small{display:block;font:600 13px system-ui;color:#5a6486;margin-top:2px}.fx-boxes{display:grid;grid-template-columns:1fr 1fr;gap:0 24px;margin-top:6px;align-items:start}.fx-box{border:1.5px solid #0b2a7a;border-radius:10px;padding:30px 14px 8px;position:relative;margin-top:14px}.fx-box.nt{padding-top:10px}.fx-tab{position:absolute;top:-1px;left:-1px;background:#0b2a7a;color:#fff;border-radius:10px 0 10px 0;padding:4px 16px;font-weight:700;font-size:14px}.fx-row{display:flex;gap:8px;align-items:baseline;border-bottom:1.5px solid #7d89b5;padding:6px 0;font-size:15px;min-height:32px}.fx-row:last-child{border-bottom:0}.fx-row b{font-weight:400;flex:none;white-space:nowrap}.fx-row span{flex:1;font-weight:700}.fx table{width:100%;border-collapse:collapse}.fx .t1{margin-top:16px;border-radius:8px;overflow:hidden}.fx th{background:#0b2a7a;color:#fff;padding:8px 6px;font-size:15px;border:1.5px solid #0b2a7a}.fx td{border:1.5px solid #0b2a7a;padding:5px 8px;height:34px;font-size:15px}.fx .n{text-align:right;white-space:nowrap}.fx .c{text-align:center}.fx-band{display:flex;align-items:center;gap:0;margin:22px 0 10px}.fx-band i{flex:1;height:4px;background:#f2b705}.fx-band b{display:flex;align-items:center;gap:10px;background:#f2b705;color:#0b2a7a;border-radius:30px;padding:8px 26px;font-size:19px;white-space:nowrap}.fx-band svg{width:24px;height:24px;stroke:#0b2a7a;fill:none;stroke-width:1.8}.fx .t2 td:first-child{font-weight:700;background:#f0f2fa;white-space:nowrap}.fx .t2 th{font-size:14px}.fx-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:20px;border-top:1px solid #d9dce8;padding-top:12px;font-size:14px}.fx-foot span{display:flex;gap:8px;align-items:center}.fx-foot em{width:1.5px;height:26px;background:#0b2a7a;display:block}.fx-note{font-size:12px;color:#5a6486;margin:8px 0 0;text-align:center}.fxv{width:100%;overflow:hidden}.fxs{transform-origin:top left;width:800px}</style>';
+const FXI={pin:'<svg viewBox="0 0 24 24"><path d="M12 22s7-6.2 7-12a7 7 0 10-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>',bld:'<svg viewBox="0 0 24 24"><path d="M4 21V8l8-5 8 5v13zM9 21v-5h6v5M8 11h2M14 11h2"/></svg>',tel:'<svg viewBox="0 0 24 24"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 005 5L15 13l5 2v4a2 2 0 01-2 2A16 16 0 013 6a2 2 0 012-2z"/></svg>',mail:'<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>',cal:'<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M8 14h2M12 14h2M16 14h2M8 17h2M12 17h2"/></svg>',web:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>'};
 // Nom / prénom : le dernier mot est le nom de famille, le reste le prénom.
 function splitName(full){const p=String(full||'').trim().split(/\s+/).filter(Boolean);return p.length<2?{prenom:'',nom:p[0]||''}:{prenom:p.slice(0,-1).join(' '),nom:p[p.length-1]}}
 function chiefInfo(s){const nm=s.fnum&&(bookOf(s.fnum,ow(s))||{}).chief||'';const st=S.staff.find(x=>x.name===nm);const n=splitName(nm);return{nom:n.nom,prenom:n.prenom,tel:chiefTelOf(s.fnum,ow(s))?phoneShow(chiefTelOf(s.fnum,ow(s))):''}}
@@ -3119,24 +3155,34 @@ function invoiceHTML(s,c,st){
   const co=comp(),f=n=>money(n).replace(' FCFA',''),ch=chiefInfo(s),cl=c||{};
   const row=(l,v)=>`<div class="fx-row"><b>${l} :</b><span>${esc(v||'')}</span></div>`;
   const filler=Math.max(0,8-s.lines.length);
-  const lab={payee:'Payée',retard:'En retard',aujourdhui:"Aujourd'hui",avenir:'À venir'};
   const ids=[[FXI.pin,'Adresse',co.address],[FXI.bld,'NINEA',co.ninea],[FXI.bld,'RCCM',co.rccm]].filter(x=>x[2]);
   const phones=[co.phone,co.whatsapp].filter(Boolean).join(' / ');
   const foot=[[FXI.tel,phones],[FXI.mail,co.email],[FXI.web,co.website]].filter(x=>x[1]);
   const livr=[cl.address,[cl.city,cl.landmark].filter(Boolean).join(' · ')].filter(Boolean);
+  // Échéancier : acompte puis versements (au moins 4 lignes, comme sur le carnet papier)
+  const sch=st.sched||[],schedPaid=sch.reduce((a,e)=>a+(e.amount-e.balance),0),depPaid=Math.max(0,st.paid-schedPaid);
+  const ord=n=>n===1?'1<sup>er</sup> versement':n+'<sup>e</sup> versement';
+  const R=[];
+  if(s.type==='credit'){R.push(['Acompte',fdate(s.date),s.deposit||0,depPaid,Math.max(0,(s.deposit||0)-depPaid)]);sch.forEach(e=>R.push([ord(e.n),fdate(e.due),e.amount,e.amount-e.balance,e.balance]))}
+  else R.push(['Comptant',fdate(s.date),s.total,st.paid,st.balance]);
+  for(let k=sch.length+1;s.type==='credit'&&R.length<5;k++)R.push([ord(k),'','','','']);
+  const cell=v=>v===''?'':f(v);
   return FXCSS+`<div class="fx">
   <div class="fx-top"><div><img class="fx-logo" src="${LOGOH}" alt="${esc(co.name||'SenAfterPay')}">${ids.length?`<div class="fx-ids">${ids.map(x=>`<div>${x[0]}<span>${x[1]} : ${esc(x[2])}</span></div>`).join('')}</div>`:''}</div>
   <div class="fx-title">FACTURE N° ${s.fnum?pad(s.fnum):esc(s.number)}<small>${s.page?'Page '+pad(s.page)+' · Réf. '+esc(ref(s)):''}</small></div></div>
   <div class="fx-boxes"><div><div class="fx-box"><span class="fx-tab">Informations Client</span>${row('Nom Prénom',cl.name)}${row('Profession',cl.job)}${row('Téléphone',cl.phone?phoneShow(cl.phone):'')}${row('N° Pièce',cl.idno)}</div>
-  <div class="fx-box" style="padding-top:12px">${row('Date',fdate(s.date))}</div></div>
+  <div class="fx-box nt">${row('Date',fdate(s.date))}</div></div>
   <div class="fx-box"><span class="fx-tab">Informations Du chef de facture</span>${row('Nom',ch.nom)}${row('Prénom',ch.prenom)}${row('Téléphone',ch.tel)}${row('Employé',sellerOf(s))}</div></div>
-  <div class="fx-wrap"><table><thead><tr><th style="width:12%">QTE</th><th>Désignation</th><th style="width:20%">Prix Unité</th><th style="width:20%">Total</th></tr></thead><tbody>
+  <table class="t1"><thead><tr><th style="width:10%">QTE</th><th>Désignation</th><th style="width:20%">Prix Unité</th><th style="width:20%">Total</th></tr></thead><tbody>
   ${s.lines.map(l=>`<tr><td class="c">${l.qty}</td><td>${esc(l.name)}</td><td class="n">${f(l.price)}</td><td class="n">${f(l.qty*l.price)}</td></tr>`).join('')}
   ${Array(filler).fill('<tr><td></td><td></td><td></td><td></td></tr>').join('')}
-  <tr><td colspan="2" class="c"><b>Montant Total</b></td><td></td><td class="n"><b>${f(s.total)}</b></td></tr></tbody></table></div>
-  <div class="fx-box"><span class="fx-tab">Conditions de paiement</span>${s.type==='credit'?`${row('Acompte versé',money(s.deposit))}${row('Reste à payer',money(st.balance))}${st.sched.map(e=>`<div class="fx-row"><b class="nw">Tranche ${e.n}/${st.sched.length} :</b><span><em class="nw">${fdate(e.due)}</em> · <em class="nw">${f(e.amount)} FCFA</em></span><b class="nw">${lab[e.status]}</b></div>`).join('')}`:row('Règlement','Payé comptant')}</div>
+  <tr><td colspan="2" class="c"><b>Montant Total</b></td><td></td><td class="n"><b>${f(s.total)}</b></td></tr></tbody></table>
+  <div class="fx-band"><i></i><b>${FXI.cal}ÉCHÉANCIER DE PAIEMENT DU CLIENT</b><i></i></div>
+  <table class="t2"><thead><tr><th>Échéance</th><th>Date prévue</th><th>Montant à payer</th><th>Montant payé</th><th>Reste à payer</th></tr></thead><tbody>
+  ${R.map(r=>`<tr><td>${r[0]}</td><td class="c">${r[1]}</td><td class="n">${cell(r[2])}</td><td class="n">${cell(r[3])}</td><td class="n">${cell(r[4])}</td></tr>`).join('')}
+  <tr><td><b>Total</b></td><td></td><td class="n"><b>${f(s.total)}</b></td><td class="n"><b>${f(st.paid)}</b></td><td class="n"><b>${f(st.balance)}</b></td></tr></tbody></table>
   <div class="fx-box"><span class="fx-tab">Adresse de livraison</span>${row('Adresse',livr[0])}<div class="fx-row"><span>${esc(livr[1]||'')}</span></div><div class="fx-row"><span>&nbsp;</span></div></div>
-  <div class="fx-foot">${foot.length?foot.map(x=>`<span>${x[0]}${esc(x[1])}</span>`).join(''):`<span>${esc(co.name||'SenAfterPay')}</span>`}</div>
+  <div class="fx-foot">${foot.length?foot.map((x,i)=>(i?'<em></em>':'')+`<span>${x[0]}${esc(x[1])}</span>`).join(''):`<span>${esc(co.name||'SenAfterPay')}</span>`}</div>
   <p class="fx-note">${esc(co.footer||'Merci de votre confiance.')}</p></div>`;
 }
 function docHTML(title,body){
