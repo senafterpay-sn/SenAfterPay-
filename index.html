@@ -1102,13 +1102,13 @@ const ownerZone=o=>(o&&PROF[o]&&PROF[o].zone)||'';
 const delDoc=async(c,id)=>{if(DB){await DB.collection(c).doc(id).delete()}else{S[c]=S[c].filter(x=>x.id!==id);lsPut(c);rerender()}};
 async function deleteBook(n,owner){
   const d=S.invoices.find(b=>b.num===n&&ow(b)===(owner||''));
-  if(S.sales.some(s=>s.fnum===n&&ow(s)===(owner||'')))return false;
+  if(S.sales.some(s=>s.fnum===n&&ow(s)===(owner||'')&&!isCancelled(s)))return false;
   if(d)await delDoc('invoices',d.id);return true;
 }
 function books(o){
   const keys=new Map();
   S.invoices.forEach(b=>keys.set(ow(b)+'|'+b.num,{num:b.num,owner:ow(b)}));
-  S.sales.filter(s=>s.fnum).forEach(s=>keys.set(ow(s)+'|'+s.fnum,{num:s.fnum,owner:ow(s)}));
+  S.sales.filter(s=>s.fnum&&!isCancelled(s)).forEach(s=>keys.set(ow(s)+'|'+s.fnum,{num:s.fnum,owner:ow(s)}));
   let L=[...keys.values()];
   if(o!==undefined)L=L.filter(b=>b.owner===(o||''));else if(!ME.isAdmin&&ME.id)L=L.filter(b=>b.owner===ME.id);
   return L.sort((a,b)=>a.num-b.num).map(b=>{const u=usedPages(b.num,b.owner).size;return{num:b.num,owner:b.owner,chief:(bookOf(b.num,b.owner)||{}).chief||'',used:u,open:u<PAGES}});
@@ -1265,15 +1265,17 @@ function staffBlock(ms){
   <div class="card scroll"><table class="tbl"><thead><tr><th>Employé</th><th class="n">Ventes</th><th class="n">Montant</th></tr></thead><tbody>${L.length?L.map(([k,v])=>`<tr><td>${esc(k)}</td><td class="n">${v.n}</td><td class="n">${money(v.t)}</td></tr>`).join(''):'<tr><td colspan="3">Aucune vente ce mois-ci.</td></tr>'}</tbody></table></div>
   <button class="btn line" style="margin-top:10px" data-act="staff">Gérer les employés</button>`;
 }
+const geoHref=cl=>{if(!cl)return'';if(cl.lat!=null)return'https://www.google.com/maps/dir/?api=1&destination='+cl.lat+','+cl.lng+'&travelmode=driving';if(cl.geo)return cl.geo;const q=[cl.address,cl.landmark,cl.city].filter(Boolean).join(', ');return q?'https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(q+', Sénégal'):''};
 function dueActs(e){
   const cl=e.client,d=daysUntil(e.due,today());
   const ph=phoneIntl(cl&&cl.phone),txt=encodeURIComponent(reminderText(e)),k=e.sale.id+'|'+e.n;
   const rm=S.reminders.find(x=>x.id===e.sale.id+'_'+e.n);
   const hb=e.balance>0&&!window.__noPayBtn?`<button type="button" class="wa" data-paydue="${e.sale.id}|${e.n}">Payer</button>`:'';
+  const gh=geoHref(cl),rt=gh?`<a href="${esc(gh)}" target="_blank" rel="noopener" data-go="1">📍 Y aller</a>`:'';
   const chan={tel:'appel',sms:'SMS',wa:'WhatsApp',copy:'contact'};
-  if(!ph)return '<div class="acts">'+hb+'</div><p class="note" style="margin:6px 0 0">Aucun numéro valide pour ce client : ajoutez-le sur sa fiche pour pouvoir l\'appeler ou lui écrire.</p>';
+  if(!ph)return '<div class="acts">'+rt+hb+'</div><p class="note" style="margin:6px 0 0">Aucun numéro valide pour ce client : ajoutez-le sur sa fiche pour pouvoir l\'appeler ou lui écrire.</p>';
   const state=d<0?'En retard de '+(-d)+' jour(s)':d===0?"Paiement prévu aujourd'hui":d<=5?'Rappel à envoyer : dans '+d+' jour(s)':'';
-  return `<div class="acts"><a href="tel:+${ph}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|tel">Appeler</a><a href="sms:+${ph}?body=${txt}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|sms">SMS</a><button type="button" class="wa" data-wasend="${k}">WhatsApp</button>${hb}</div>${rm?`<p class="note" style="margin:0">Rappel envoyé le ${fdate(rm.at)} (${chan[rm.channel]||rm.channel})</p>`:(state?`<p class="note" style="margin:0">${state}</p>`:'')}`;
+  return `<div class="acts"><a href="tel:+${ph}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|tel">Appeler</a><a href="sms:+${ph}?body=${txt}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|sms">SMS</a><button type="button" class="wa" data-wasend="${k}">WhatsApp</button>${rt}${hb}</div>${rm?`<p class="note" style="margin:0">Rappel envoyé le ${fdate(rm.at)} (${chan[rm.channel]||rm.channel})</p>`:(state?`<p class="note" style="margin:0">${state}</p>`:'')}`;
 }
 function dueRow(e,showDate){
   const[c,l]=dueTag(e.status),cl=e.client;
@@ -1572,7 +1574,7 @@ function statusOf(rec,now,c){
 window.__trk={addPoint,statusOf,hav,DEF};
 
 /* --- état local de l'agent --- */
-let rec=null,watch=null,tick=null,dirty=false,lastFlush=0,busy=false,syncErr='',lastOk=0,onChange=()=>{};
+let rec=null,watch=null,tick=null,adopted=false,dirty=false,lastFlush=0,busy=false,syncErr='',lastOk=0,onChange=()=>{};
 const LSK='sap_trk_rec';
 const saveLocal=()=>{try{localStorage.setItem(LSK,JSON.stringify(rec))}catch(e){}};
 function loadLocal(){
@@ -1580,16 +1582,46 @@ function loadLocal(){
   rec=null;
 }
 async function flush(force){
-  if(!rec)return;
+  if(!rec)return;lockCheck();
   if(!force&&!dirty&&Date.now()-lastFlush<HB)return;
   rec.hb=Date.now();saveLocal();dirty=false;lastFlush=Date.now();
   try{await put('tracks',idOf(rec.uid,rec.day),rec);syncErr='';lastOk=Date.now()}catch(e){dirty=true;syncErr=String((e&&(e.message||e.details))||e).slice(0,180)}
   onChange();
 }
-function setGps(v){if(rec&&rec.gps!==v){rec.gps=v;dirty=true;saveLocal();flush(true)}}
+function setGps(v){if(rec&&rec.gps!==v){rec.gps=v;if(v!=='ok'){rec.offs=rec.offs||[];const o=rec.offs[rec.offs.length-1];if(!o||o[1])rec.offs.push([Date.now(),0,v])}dirty=true;saveLocal();flush(true);lockCheck()}}
+/* La localisation du téléphone est obligatoire pendant le travail : sinon l'application est bloquée et le directeur est prévenu. */
+function lockCheck(){
+  let el=document.getElementById('gpslock');
+  const bad=!!(rec&&rec.state==='active'&&!ME.isAdmin&&(rec.gps==='off'||rec.gps==='denied'));
+  if(!bad){if(el)el.remove();return}
+  if(el)return;
+  el=document.createElement('div');el.id='gpslock';
+  el.style.cssText='position:fixed;inset:0;z-index:100000;background:#0b1020;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:26px;text-align:center';
+  el.innerHTML='<div style="font-size:56px">📍</div><h2 style="margin:0;font:800 24px system-ui">Localisation coupée</h2><p style="margin:0;max-width:340px;font:16px/1.45 system-ui">Votre travail est en cours : la localisation du téléphone doit rester activée. Activez le GPS (et l\'autorisation « tout le temps » pour SenAfterPay), puis touchez le bouton. Le directeur est prévenu.</p><button id="gpsretry" style="border:0;border-radius:12px;background:#f2b705;color:#0b1f66;font:800 17px system-ui;padding:14px 22px">J\'ai activé la localisation</button><p id="gpsmsg" style="margin:0;color:#ffb4a9;font:14px system-ui"></p>';
+  document.body.appendChild(el);
+  el.querySelector('#gpsretry').onclick=async()=>{
+    const b=el.querySelector('#gpsretry'),m=el.querySelector('#gpsmsg');b.disabled=true;m.textContent='Recherche de la position…';errAt=0;
+    if(native&&BG&&rec.gps==='denied'){try{BG.openSettings()}catch(e){}}
+    const p=await oneShot();
+    if(p){const o=rec.offs&&rec.offs[rec.offs.length-1];if(o&&!o[1])o[1]=Date.now();rec.gps='ok';dirty=true;onPos(p);if(!watch)startWatch();lockCheck()}
+    else{m.textContent='Position toujours introuvable. Activez la localisation du téléphone puis réessayez.';b.disabled=false}
+  };
+}
+/* reprise automatique : réinstallation de l'application, données du téléphone effacées, etc. */
+function adopt(){
+  if(adopted||rec||ME.isAdmin||!ME.id)return;
+  const d=(S.tracks||[]).find(x=>x.id===idOf(ME.id,today()));
+  if(!d||d.state!=='active')return;
+  adopted=true;
+  if(!inHours(Date.now(),cfg()))return;
+  rec={...d};delete rec.id;rec.gps='ok';rec.dev=native?'android':'web';rec.startedAt=Date.now();rec.endReq=0;
+  saveLocal();startWatch();clearInterval(tick);tick=setInterval(tickFn,30000);onChange();toast('Suivi repris automatiquement');
+}
+const endOk=()=>{const d=(S.settings||[]).find(x=>x.id==='endok_'+uidMe());return d&&rec&&d.at>(rec.startedAt||rec.start||0)?d:null};
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&rec&&rec.state==='active'&&watch==null)startWatch()});
 function onPos(p){
   if(!rec||rec.state!=='active')return;
-  errAt=0;if(rec.gps!=='ok'){rec.gps='ok'}
+  errAt=0;if(rec.gps!=='ok'){rec.gps='ok';const o=rec.offs&&rec.offs[rec.offs.length-1];if(o&&!o[1])o[1]=Date.now();lockCheck()}
   addPoint(rec,p,cfg());dirty=true;saveLocal();
   if(Date.now()-lastFlush>=HB||rec.pts.length%10===0)flush();else onChange();
 }
@@ -1620,7 +1652,7 @@ async function tickFn(){
   if(!inHours(Date.now(),c)){await end(true);return}
   if(SC&&rec.stepsOk){try{const s=await SC.getSteps();if(s&&typeof s.steps==='number'){rec.steps=(rec.steps0||0)+s.steps;dirty=true}}catch(e){}}
   const L=rec.last;
-  if(errAt&&(!L||(errAt>L[0]&&Date.now()-L[0]>90000)))setGps('off');
+  if(errAt&&(!L||(errAt>L[0]&&Date.now()-L[0]>45000)))setGps('off');
   if(!L||Date.now()-L[0]>HB){const p=await oneShot();if(p)onPos(p)}   // confirme la position quand l'agent ne bouge pas
   flush();
 }
@@ -1633,7 +1665,7 @@ async function start(){
     if(old){rec={...old};delete rec.id;rec.state='active';rec.end=0;rec.gps='ok'}
     else rec=newRec(uidMe(),ME.name||'Agent',today());
   }else{rec.state='active';rec.end=0;rec.gps='ok'}
-  rec.dev=native?'android':'web';
+  rec.dev=native?'android':'web';rec.startedAt=Date.now();rec.endReq=0;
   saveLocal();dirty=true;await flush(true);
   await startWatch();
   clearInterval(tick);tick=setInterval(tickFn,30000);
@@ -1648,7 +1680,7 @@ async function end(auto){
   try{localStorage.removeItem(LSK)}catch(e){}
   if(window.__wl){try{window.__wl.release()}catch(e){}window.__wl=null}
   if(auto)toast('Fin des heures de travail : suivi arrêté');
-  onChange();
+  onChange();lockCheck();
 }
 const active=()=>!!(rec&&rec.state==='active');
 /* reprise après fermeture de l'application */
@@ -1712,7 +1744,7 @@ function openWork(){
       <div class="card" style="text-align:center">
         <div class="tk-st ${on?'on':''}">${on?'● Suivi en cours depuis '+hm(r.start):(r.state==='ended'?'Journée terminée à '+hm(r.end):'Suivi arrêté')}</div>
         <p class="note" style="margin:6px 0 12px">Heures de travail autorisées : ${c.from} – ${c.to}. Le suivi s'arrête tout seul à ${c.to}.</p>
-        ${on?'<button class="btn danger" id="wend">Terminer le travail</button>':'<button class="btn" id="wgo">Commencer le travail</button>'}
+        ${on?(()=>{const lim=inHours(Date.now(),c)&&!endOk();return `<button class="btn ${lim?'line':'danger'}" id="wend">${lim?(r.endReq?'Demande envoyée au directeur… (en attente)':'Demander à terminer le travail'):'Terminer le travail'+(endOk()?' (autorisé)':'')}</button>${lim?'<p class="note" style="margin:6px 0 0">Pendant les heures de travail, seul le directeur peut autoriser la fin du travail.</p>':''}`})():'<button class="btn" id="wgo">Commencer le travail</button>'}
         ${gps}
       </div>
       <div class="kpis" style="margin-top:12px">
@@ -1734,7 +1766,11 @@ function openWork(){
       ${native?'<p class="note">Sur Tecno, Infinix, Samsung, Xiaomi : réglages du téléphone → Batterie → SenAfterPay → « Sans restriction », sinon le système peut arrêter le suivi.</p>':''}`);
     const el=workSheet.el;
     const g=$('#wgo',el);if(g)g.onclick=async()=>{g.disabled=true;await start();draw()};
-    const e=$('#wend',el);if(e)e.onclick=async()=>{if(confirm('Terminer le travail et arrêter le suivi ?')){await end();draw()}};
+    const e=$('#wend',el);if(e)e.onclick=async()=>{
+      if(inHours(Date.now(),c)&&!endOk()){
+        if(!rec.endReq){rec.endReq=Date.now();dirty=true;saveLocal();await flush(true)}
+        alert('Vous ne pouvez pas terminer le travail pendant les heures de travail sans l\'accord du directeur. Votre demande lui a été envoyée : il doit l\'autoriser.');draw();return}
+      if(confirm('Terminer le travail et arrêter le suivi ?')){await end();draw()}};
     $('#wph',el).onclick=()=>pickPhoto(uidMe(),draw);
     const sb=$('#wsend',el);if(sb)sb.onclick=async()=>{sb.disabled=true;await flush(true);draw()};
     const vb=$('#wvis',el);if(vb)vb.onclick=openVisit;
@@ -1846,8 +1882,13 @@ function dirUpdate(){
   $('#tcards',el).innerHTML=`<div class="sec"><h2>Agents</h2><span>${A.length}</span></div>`+(A.map(a=>{
     const l=a.cur.last,seen=l?'Dernière position reçue '+ago(now-l[0]):'Aucune position reçue';
     return`<div class="card tk-card" data-ag="${a.uid}"><div style="display:flex;gap:10px;align-items:center">${avatar(a.uid,nameOf(a.uid),a.st.color,44)}<div style="min-width:0;flex:1"><b>${esc(nameOf(a.uid))}</b><div class="tk-pill" style="background:${a.st.color}">${a.st.label}</div><small class="note" style="display:block;margin:2px 0 0">${seen}${a.st.k==='off'||a.st.k==='nogps'?' · pas la position actuelle':''}</small></div></div>
+      ${a.cur.state==='active'&&a.cur.day===today()?`<div class="note" style="margin:8px 0 0;${a.cur.endReq?'color:var(--warn);font-weight:700':''}">${a.cur.endReq?'⚠ Demande pour terminer le travail ('+hm(a.cur.endReq)+') ':''}<button type="button" class="btn sm ${a.cur.endReq?'':'line'}" data-endok="${a.uid}" style="width:auto;margin-top:4px">${(S.settings||[]).some(x=>x.id==='endok_'+a.uid&&x.at>(a.cur.startedAt||a.cur.start))?'Arrêt déjà autorisé':'Autoriser l\'arrêt'}</button></div>`:''}
+      ${(a.cur.offs||[]).length?`<div class="note" style="margin:6px 0 0;color:var(--bad)">📵 Localisation coupée ${(a.cur.offs||[]).length} fois · ${dur((a.cur.offs||[]).reduce((t,o)=>t+((o[1]||Date.now())-o[0]),0))} au total</div>`:''}
       <div class="tk-g"><div><b>${a.steps!=null?nf.format(a.steps):'—'}</b><span>pas</span></div><div><b>${km(a.dist)}</b><span>distance</span></div><div><b>${a.nSales}</b><span>ventes</span></div><div><b>${nf.format(a.enc)}</b><span>encaissé</span></div><div><b>${a.visits.length}</b><span>visites</span></div></div></div>`}).join('')||'<p class="note">Aucun suivi enregistré sur cette période. Les agents apparaissent ici dès qu\'ils appuient sur « Commencer le travail ».</p>');
   el.querySelectorAll('[data-ag]').forEach(r=>r.onclick=()=>openAgent(r.dataset.ag));
+  el.querySelectorAll('[data-endok]').forEach(b=>b.onclick=async ev=>{ev.stopPropagation();const u=b.dataset.endok;
+    if(!confirm('Autoriser '+nameOf(u)+' à terminer son travail maintenant ?'))return;
+    try{await put('settings','endok_'+u,{uid:u,at:Date.now(),by:ME.id||''});toast(nameOf(u)+' peut maintenant terminer son travail')}catch(e){toast('Autorisation non enregistrée')}});
   if(MAP)drawMap(A,al,now);
 }
 function icon(html,w,h){return L.divIcon({className:'',html,iconSize:[w,h],iconAnchor:[w/2,h/2]})}
@@ -1914,8 +1955,14 @@ function alertDir(msg){
 }
 const seen=(()=>{try{return new Set(JSON.parse(localStorage.getItem('sap_trk_seen')||'[]'))}catch(e){return new Set()}})();
 function scan(c){
-  if(c!=='tracks'||!ME.isAdmin)return;
+  if(!ME.isAdmin){if(c==='tracks')adopt();if(c==='settings'||c==='tracks')onChange();return}
+  if(c!=='tracks')return;
   const cf=cfg(),now=Date.now();
+  (S.tracks||[]).filter(r=>r.day===today()&&r.state==='active'&&(r.gps==='off'||r.gps==='denied')).forEach(r=>{
+    const k='gps_'+r.uid+'_'+(r.offs||[]).length;if(seen.has(k))return;
+    seen.add(k);try{localStorage.setItem('sap_trk_seen',JSON.stringify([...seen].slice(-200)))}catch(e){}
+    alertDir('ALERTE : '+nameOf(r.uid)+' a coupé la localisation de son téléphone'+(r.offs&&r.offs.length?' à '+hm(r.offs[r.offs.length-1][0]):'')+'.');
+  });
   alertsList().forEach(({r,s})=>{
     if(!s.open||now-s.end>OFFAFTER||s.end-s.start<cf.stopMin*60000||seen.has(s.id))return;
     seen.add(s.id);try{localStorage.setItem('sap_trk_seen',JSON.stringify([...seen].slice(-200)))}catch(e){}
@@ -2886,7 +2933,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='27-10 · v22 suivi';
+const APP_VER='27-10 · v23 suivi';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
