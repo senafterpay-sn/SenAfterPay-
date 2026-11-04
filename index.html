@@ -1385,10 +1385,11 @@ function vClients(v){
   const owe=c=>S.sales.filter(s=>s.clientId===c.id&&!isCancelled(s)).reduce((a,s)=>a+saleState(s,P,now).balance,0);
   v.innerHTML=`<div class="sec"><h2>Clients</h2><span>${L.length}</span></div>
   <input class="search" id="q" type="search" placeholder="Nom ou téléphone" value="${esc(query)}">
-  <div class="list">${L.length?L.map(c=>{const o=owe(c);return `<div class="row" data-client="${c.id}"><div class="l"><b>${esc(c.name)}</b><small>${esc(c.phone||'Sans téléphone')}${c.address?' · '+esc(c.address):''}${c.nameVoice?' · 🎙 nom à écouter':''}</small></div><div class="r">${o>0?`<b>${money(o)}</b><small>dû</small>`:'<span class="pill ok">À jour</span>'}</div></div>`}).join(''):'<div class="empty">Aucun client. Ajoutez le premier avec le bouton ci-dessous.</div>'}</div>
+  <div class="list">${L.length?L.map(c=>{const o=owe(c);return `<div class="row" data-client="${c.id}"><div class="l"><b>${esc(c.name)}</b><small>${esc(c.phone||'Sans téléphone')}${c.address?' · '+esc(c.address):''}${c.nameVoice?' · 🎙 nom à écouter':''}</small></div><div class="r">${o>0?`<b>${money(o)}</b><small>dû</small>`:'<span class="pill ok">À jour</span>'}${ME.isAdmin?`<button type="button" class="btn danger" data-delc="${c.id}" style="padding:4px 10px;font-size:12px;margin-top:6px;width:auto">Supprimer</button>`:''}</div></div>`}).join(''):'<div class="empty">Aucun client. Ajoutez le premier avec le bouton ci-dessous.</div>'}</div>
   ${L.length?`<button type="button" class="btn line" id="allc" style="margin:12px 0 70px">Enregistrer ${q?'ces '+L.length+' clients':'tous les clients'} dans les contacts du téléphone</button>`:''}
   <button class="btn fab" data-act="newclient">+ Client</button>`;
   const ab=v.querySelector('#allc');if(ab)ab.onclick=()=>openContactPicker(L);
+  v.querySelectorAll('[data-delc]').forEach(b=>b.onclick=async e=>{e.stopPropagation();if(await askDelClient(b.dataset.delc))rerender()});
   bindSearch(v);bindRows(v);
 }
 function vStock(v){
@@ -1422,6 +1423,28 @@ function impPlan(r){
   return{total,dep,sched,pay,paid,type:sched.length?'credit':'comptant',balance:r.rec?0:Math.max(0,total-paid)};
 }
 
+async function delClientFull(id){
+  const c=byId(S.clients,id);if(!c)return;
+  const sales=S.sales.filter(x=>x.clientId===id),ids=new Set(sales.map(x=>x.id));
+  const del=async(col,i)=>{if(DB){await DB.collection(col).doc(i).delete()}else{S[col]=S[col].filter(x=>x.id!==i);lsPut(col)}};
+  for(const p of S.payments.filter(p=>ids.has(p.saleId)))await del('payments',p.id);
+  for(const k of S.cancels.filter(k=>ids.has(k.saleId)))await del('cancels',k.id);
+  for(const x of sales){
+    if(DB&&x.fnum&&x.page){try{await DB.doc('slots/'+sh(ow(x))+'F'+x.fnum+'P'+x.page).delete()}catch(e){}}
+    await del('sales',x.id);
+  }
+  await del('clients',id);
+  if(!DB)rerender();
+  await logAct('Client supprimé',c.name+(sales.length?' · '+sales.length+' vente(s) supprimée(s)':''));
+  return sales.length;
+}
+async function askDelClient(id){
+  const c=byId(S.clients,id);if(!c)return false;
+  const n=S.sales.filter(x=>x.clientId===id).length;
+  if(!confirm(n?'Supprimer le client « '+c.name+' » ?\n\nATTENTION : il a '+n+' vente(s). Elles seront supprimées avec ses paiements. Action impossible à annuler.':'Supprimer le client « '+c.name+' » ? Il n\'a aucune vente.'))return false;
+  if(n&&!confirm('Dernière confirmation : supprimer « '+c.name+' » et ses '+n+' vente(s) pour toujours ?'))return false;
+  try{await delClientFull(id);toast('Client supprimé');return true}catch(e){toast('Suppression impossible');return false}
+}
 async function impWipe(n,own){
   const sales=S.sales.filter(x=>x.imported&&x.fnum===n&&ow(x)===own);
   const ids=new Set(sales.map(x=>x.id));
@@ -1804,6 +1827,7 @@ function loadLeaflet(){
     const st=document.createElement('style');st.textContent=c.textContent;document.head.appendChild(st);
     const sc=document.createElement('script');sc.textContent=s.textContent;document.head.appendChild(sc);return !!window.L}catch(e){return false}
 }
+window.loadLeaflet=loadLeaflet;
 const range=()=>(S.tracks||[]).filter(r=>r.day>=F.from&&r.day<=F.to&&(!F.agent||r.uid===F.agent));
 const nameOf=u=>(typeof PROF!=='undefined'&&PROF[u]&&PROF[u].name)||((S.tracks||[]).find(r=>r.uid===u)||{}).name||'Agent';
 function agg(){
@@ -1909,6 +1933,10 @@ function drawMap(A,al,now){
       const m=L.marker([l[1],l[2]],{icon:icon(`<div class="tk-pin${stale?' old':''}" style="border-color:${a.st.color}">${photoOf(a.uid)?`<img src="${photoOf(a.uid)}" alt="">`:`<b>${esc(ini(nameOf(a.uid)))}</b>`}</div><div class="tk-nm">${esc(nameOf(a.uid))}${stale?'<br><i>'+ago(ms)+'</i>':''}</div>`,46,46),zIndexOffset:1000}).addTo(LAYER);
       m.on('click',()=>openAgent(a.uid));bounds.push([l[1],l[2]]);
     }
+  });
+  if(typeof houseLayer==='function')S.clients.filter(c=>c.lat!=null&&c.lng!=null).forEach(c=>{
+    houseLayer(c,LAYER).bindPopup(`<b>🏠 ${esc(c.name)}</b>${c.phone?'<br>Tél. '+esc(c.phone):''}<br><a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${c.lat},${c.lng}">📍 Y aller</a>`);
+    if(!bounds.length)bounds.push([c.lat,c.lng]);
   });
   al.forEach(x=>{const s=x.s,mins=Math.round((s.end-s.start)/60000);
     L.marker([s.lat,s.lng],{icon:icon(`<div class="tk-stop${s.open?' live':''}">⏸ ${mins} min</div>`,70,22)}).addTo(LAYER).on('click',()=>openAlert(s.id))});
@@ -2100,6 +2128,23 @@ function openClientForm(id){
     };
   });
 }
+const HOUSE_R=25;
+function houseIcon(){return L.divIcon({className:'',html:'<div style="width:30px;height:30px;border-radius:50%;background:#1d6fe0;color:#fff;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:17px;box-shadow:0 1px 5px #0006">🏠</div>',iconSize:[30,30],iconAnchor:[15,15]})}
+function houseLayer(cc,layer){
+  const ll=[cc.lat,cc.lng];
+  L.circle(ll,{radius:HOUSE_R,color:'#1d6fe0',weight:3,fillColor:'#1d6fe0',fillOpacity:.18}).addTo(layer);
+  return L.marker(ll,{icon:houseIcon()}).addTo(layer);
+}
+function houseMap(el,cc){
+  if(!el)return;
+  if(!(window.loadLeaflet&&window.loadLeaflet())){el.innerHTML='<div class="note" style="padding:14px">Carte indisponible hors connexion. La position est bien enregistrée.</div>';return}
+  try{
+    const m=L.map(el,{zoomControl:true,attributionControl:false}).setView([cc.lat,cc.lng],18);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(m);
+    const g=L.layerGroup().addTo(m);houseLayer(cc,g).bindPopup('<b>'+esc(cc.name)+'</b>').openPopup();
+    setTimeout(()=>m.invalidateSize(),250);
+  }catch(e){el.innerHTML='<div class="note" style="padding:14px">Carte indisponible.</div>'}
+}
 function openClient(id){
   const c=byId(S.clients,id);if(!c)return;
   const o=sheet(c.name,'',(el,o)=>{o.refresh=()=>draw()});
@@ -2111,17 +2156,19 @@ function openClient(id){
     setBody(o,`${cc.nameVoice?`<div class="card" style="margin-bottom:10px"><b>Nom dit à la voix par l'employé</b><audio controls src="${cc.nameVoice}" style="width:100%;margin-top:8px"></audio><p class="note" style="margin:6px 0 0">Écoute, puis touche « Modifier » pour écrire le nom.</p></div>`:''}<div class="card"><div class="tot"><span>Téléphone</span><b>${esc(cc.phone||'—')}</b></div><div class="tot"><span>Ville</span><b style="text-align:right">${esc(cc.city||'—')}</b></div><div class="tot"><span>Adresse</span><b style="text-align:right">${esc(cc.address||'—')}</b></div>${cc.landmark?`<div class="tot"><span>Repère</span><b style="text-align:right">${esc(cc.landmark)}</b></div>`:''}<div class="tot"><span>Profession</span><b>${esc(cc.job||'—')}</b></div><div class="tot g"><span>Reste à payer</span><span>${money(owed)}</span></div></div>
     ${phoneIntl(cc.phone)?`<div class="acts" style="margin-top:10px"><a href="tel:+${phoneIntl(cc.phone)}">Appeler</a><a class="wa" href="https://wa.me/${phoneIntl(cc.phone)}" target="_blank" rel="noopener">WhatsApp</a><button type="button" id="addc">Ajouter aux contacts</button></div>`:''}
     <button type="button" class="btn sec2" id="setgeo" style="margin-top:10px">📍 ${cc.lat!=null?'Mettre à jour la position GPS (je suis chez le client)':'Enregistrer la position GPS (je suis chez le client)'}</button>
+    ${cc.lat!=null?`<div id="hmap" style="height:210px;border-radius:12px;margin-top:10px;border:2px solid #1d6fe0;overflow:hidden;background:#e8eef7"></div>`:''}
     ${cc.lat!=null?`<p class="note" style="margin:4px 0 0">Position GPS enregistrée le ${fdate(String(cc.geoAt||'').slice(0,10))} · précision ${cc.acc||'?'} m</p>`:''}
     ${cc.geo||cc.address||cc.city?`<a class="btn sec2" style="display:block;text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="${esc(cc.geo||('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent([cc.address,cc.city,'Sénégal'].filter(Boolean).join(', '))))}">${cc.geo?'Ouvrir la position du client':'Chercher l\'adresse sur la carte'}</a>`:'<p class="note">Aucune localisation. Touchez « Modifier » pour l\'ajouter.</p>'}
     ${phoneIntl(cc.phone)&&comp().waGroup?'<button type="button" class="btn sec2" id="wag" style="margin-top:10px">Inviter au groupe WhatsApp</button>':''}
     <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="ns">Nouvelle vente</button><button class="btn line" id="ed">Modifier</button></div>
-    ${ME.isAdmin&&!S.sales.some(s=>s.clientId===id)?'<button type="button" class="btn danger" id="delc" style="margin-top:10px">Supprimer ce client</button>':''}
+    ${ME.isAdmin?'<button type="button" class="btn danger" id="delc" style="margin-top:10px">Supprimer le client</button>':''}
     <div class="sec"><h2>Historique</h2><span>${L.length}</span></div>
     <div class="list">${L.length?L.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>${esc(ref(x.s))}</b><small>${fdate(x.s.date)} · ${trLabel(x.s)} · ${esc(sellerOf(x.s))}</small></div><div class="r"><b>${money(x.s.total)}</b><span class="pill ${stPill(x.st.status)}">${x.st.status}</span></div></div>`).join(''):'<div class="empty">Aucun achat.</div>'}</div>`);
     $('#ns',o.el).onclick=()=>openNewSale(id);$('#ed',o.el).onclick=()=>openClientForm(id);
     const ac=$('#addc',o.el);if(ac)ac.onclick=()=>addToContacts([cc]);
     $('#setgeo',o.el).onclick=()=>saveClientGeo(id,draw);
-    const dc=$('#delc',o.el);if(dc)dc.onclick=async()=>{if(!confirm('Supprimer le client « '+cc.name+' » ? Il n\'a aucune vente.'))return;try{await delDoc('clients',id);await logAct('Client supprimé',cc.name);toast('Client supprimé');o.close()}catch(e){toast('Suppression impossible')}};
+    if(cc.lat!=null)houseMap($('#hmap',o.el),cc);
+    const dc=$('#delc',o.el);if(dc)dc.onclick=async()=>{if(await askDelClient(id))o.close()};
     const wg=$('#wag',o.el);if(wg)wg.onclick=()=>{const ph=phoneIntl(cc.phone),g=comp().waGroup;window.open('https://wa.me/'+ph+'?text='+encodeURIComponent('Bonjour '+cc.name+', rejoignez le groupe WhatsApp SenAfterPay pour recevoir nos nouveautés et rappels : '+g),'_blank')};
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
   }
@@ -2933,7 +2980,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='27-10 · v23 suivi';
+const APP_VER='03-11 · v24 maison bleue';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
