@@ -1497,6 +1497,25 @@ function openImport(){
       if(!confirm('Importer '+picks.length+' facture(s) sur le carnet F'+n+' de '+(PROF[own]&&PROF[own].name)+' ?'))return;
       const b=$('#igo',el);b.disabled=true;const res=$('#ires',el);let ok=0,skip=[],fail=[];
       try{
+        const imp=new Set(IMPORT_DATA[n].map(r=>r.p)),maxP=Math.max(...IMPORT_DATA[n].map(r=>r.p));
+        const clash=S.sales.filter(x=>x.fnum===n&&ow(x)===own&&!x.imported&&imp.has(x.page)&&!freedSales().has(x.id)).sort((a,b)=>a.page-b.page);
+        if(clash.length){
+          res.textContent='Déplacement de '+clash.length+' facture(s) déjà enregistrée(s)…';
+          let np=maxP;
+          for(const x of clash){
+            let done=false;
+            while(!done&&np<PAGES){np++;if(usedPages(n,own).has(np))continue;done=await claimSlot(n,np,x.id,own)}
+            if(!done)throw new Error('plus de page libre pour déplacer F'+n+'P'+x.page);
+            const old=x.page;
+            if(!picks.includes(old))picks.push(old);
+            await put('sales',x.id,{...x,page:np});
+            if(DB){try{await DB.doc('slots/'+sh(own)+'F'+n+'P'+old).delete()}catch(e){}}
+            await logAct('Page déplacée','F'+n+'P'+old+' → F'+n+'P'+np);
+          }
+          await new Promise(r=>setTimeout(r,1200));
+        }
+      }catch(e){res.textContent='Échec du déplacement : '+String((e&&e.message)||e).slice(0,100);b.disabled=false;return}
+      try{
         if(!bookOf(n,own))await put('invoices',bkey(own,n),{num:n,owner:own,chief:impChief(n).name,chiefTel:impChief(n).tel,created:today()});
         for(const nm of['Talla','Massamba Diouf','Ibrahima Diop'])if(!S.staff.some(s=>s.name===nm))await put('staff',uid('e'),{name:nm,phone:nm==='Massamba Diouf'?'76 381 69 20':nm==='Ibrahima Diop'?'78 525 35 17':'',active:true});
         const byTel={};
@@ -2020,12 +2039,13 @@ function vMore(v){
     ${ME.isAdmin?item('gear','Entreprise','Nom, téléphone, adresse et mentions des factures','comp'):''}
     ${ME.isAdmin?item('down','Voix en wolof','Enregistrer les consignes de la vente guidée','voice'):''}
     ${ME.isAdmin?item('down','Exporter les données','Ventes, paiements, échéances, clients (Excel)','exp'):''}
+    ${item('gear','WhatsApp utilisé','Business ou normal pour envoyer factures et rappels','wapick')}
     ${item('gear','Mode simple (photos et voix)','Vente guidée pour les employés qui ne lisent pas','simple')}
     ${ME.isAdmin?item('down','Importer d\'anciennes factures','Temporaire : saisir les carnets papier d\'un agent','imp'):''}
     ${ME.isAdmin?item('team','Suivi des agents','Carte, trajets, pas, visites, alertes d\'immobilité','trkd'):item('team','Mon travail','Commencer ou terminer le travail, visites, pas','trkw')}
     ${ME.isAdmin?item('log','Journal des opérations','Annulations, changements de chef, stock','log'):''}
   </div>`;
-  v.querySelectorAll('[data-m]').forEach(r=>r.onclick=()=>({stock:()=>{tab='stock';render()},cash:()=>openCash(),staff:()=>openStaff(),comp:()=>openCompany(),exp:()=>openExports(),log:()=>openJournal(),simple:()=>openSimpleSettings(),access:()=>openAccess(),voice:()=>openVoices(),imp:()=>openImport(),trkd:()=>TRK.openTracking(),trkw:()=>TRK.openWork()})[r.dataset.m]());
+  v.querySelectorAll('[data-m]').forEach(r=>r.onclick=()=>({stock:()=>{tab='stock';render()},cash:()=>openCash(),staff:()=>openStaff(),comp:()=>openCompany(),exp:()=>openExports(),log:()=>openJournal(),simple:()=>openSimpleSettings(),wapick:()=>openWaPick(),access:()=>openAccess(),voice:()=>openVoices(),imp:()=>openImport(),trkd:()=>TRK.openTracking(),trkw:()=>TRK.openWork()})[r.dataset.m]());
 }
 function bindSearch(v){const q=$('#q',v);if(!q)return;q.oninput=()=>{query=q.value;const pos=q.selectionStart;render();const n=$('#q');n.focus();n.setSelectionRange(pos,pos)}}
 function bindRows(v){
@@ -2084,9 +2104,12 @@ async function addToContacts(list){
       await SAPN.openVcf({name:'clients-senafterpay.vcf',text:list.map(vcard).join('')});
       toast(list.length+' contacts prêts : choisissez l\'application Contacts puis confirmez l\'import');return;
     }
+    if(list.length===1&&/Android/i.test(navigator.userAgent)){const c=list[0],q=encodeURIComponent;
+      toast('Ouverture de l\'ajout au contact…');
+      location.href='intent:#Intent;action=android.intent.action.INSERT;type=vnd.android.cursor.dir/contact;S.name='+q(c.name)+';S.phone='+q('+'+phoneIntl(c.phone))+';S.company=SenAfterPay;end';return}
     const blob=new Blob([list.map(vcard).join('')],{type:'text/vcard;charset=utf-8'}),name=list.length===1?'contact-'+list[0].name.replace(/[^\w]+/g,'-')+'.vcf':'clients-senafterpay.vcf';
     try{const f=new File([blob],name,{type:'text/vcard'});if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:'Contacts SenAfterPay'});toast('Choisissez « Contacts » dans la liste, puis enregistrez');return}}catch(e){if(e&&e.name==='AbortError')return}
-    const d=await claude.use('downloads');await d.save({filename:name,data:blob});
+    {const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{a.remove()},1500)}
     toast('Fichier « '+name+' » enregistré dans Téléchargements : ouvrez l\'application Fichiers, touchez-le, puis choisissez Contacts pour ajouter '+(list.length>1?'les '+list.length+' clients':'le client')+' aux contacts');
   }catch(e){if(!e||e.code!=='declined')toast('Contacts : '+String((e&&e.message)||e).slice(0,110))}
 }
@@ -2098,11 +2121,23 @@ function openGroupInvite(list){
         await put('settings','company',{...comp(),waGroup:v});o.close();toast('Lien enregistré');setTimeout(()=>openGroupInvite(list),300)}});return}
   const L=list.filter(c=>phoneIntl(c.phone)).sort((a,b)=>a.name.localeCompare(b.name));
   let sent={};try{sent=JSON.parse(localStorage.getItem('sap_wa_sent')||'{}')}catch(e){}
-  sheet('Inviter au groupe WhatsApp',`<p class="note" style="margin-top:0">WhatsApp ne permet pas d'ajouter quelqu'un au groupe automatiquement : chaque client reçoit le lien d'invitation et touche pour rejoindre. Touchez « Envoyer » à côté de chaque client (il passe en vert après envoi).</p>
-    <div class="list">${L.map(c=>`<div class="row" style="align-items:center"><div class="l"><b>${esc(c.name)}</b><small>${esc(phoneShow(c.phone))}</small></div><div class="r"><button type="button" class="btn ${sent[c.id]?'sec2':''} sm" data-wg="${c.id}" style="width:auto">${sent[c.id]?'✓ Envoyé':'Envoyer'}</button></div></div>`).join('')}</div>`,(el,o)=>{
-    el.querySelectorAll('[data-wg]').forEach(b=>b.onclick=()=>{const c=byId(S.clients,b.dataset.wg);if(!c)return;
-      window.open('https://wa.me/'+phoneIntl(c.phone)+'?text='+encodeURIComponent('Bonjour '+c.name+', rejoignez le groupe WhatsApp SenAfterPay pour recevoir nos nouveautés et rappels : '+g),'_blank');
-      sent[c.id]=1;try{localStorage.setItem('sap_wa_sent',JSON.stringify(sent))}catch(e){}b.textContent='✓ Envoyé';b.classList.add('sec2')})});
+  const msg=n=>'Bonjour'+(n?' '+n:'')+', rejoignez le groupe WhatsApp SenAfterPay pour recevoir nos nouveautés et rappels : '+g;
+  sheet('Inviter au groupe WhatsApp',`<p class="note" style="margin-top:0">WhatsApp ne permet pas d'ajouter quelqu'un au groupe automatiquement : chaque client reçoit le lien et touche pour rejoindre.</p>
+    <button type="button" class="btn" id="wgs">Envoyer le lien à plusieurs d'un coup (WhatsApp)</button>
+    <p class="note">Dans WhatsApp, touchez longuement un premier contact puis cochez les autres, et envoyez.</p>
+    <div class="sec"><h2>Ou un par un</h2></div>
+    <div class="list">${L.map(c=>`<div class="row" style="align-items:center"><label style="display:flex;gap:10px;align-items:center;margin:0;flex:1;min-width:0"><input type="checkbox" data-wc="${c.id}" ${sent[c.id]?'':'checked'} style="width:22px;height:22px;flex:none"><span class="l"><b>${esc(c.name)}</b><small>${esc(phoneShow(c.phone))}</small></span></label><div class="r"><button type="button" class="btn ${sent[c.id]?'sec2':''} sm" data-wg="${c.id}" style="width:auto">${sent[c.id]?'✓ Envoyé':'Envoyer'}</button></div></div>`).join('')}</div>
+    <div style="height:10px"></div><button type="button" class="btn line" id="wgn"></button>`,(el,o)=>{
+    const mark=(id)=>{sent[id]=1;try{localStorage.setItem('sap_wa_sent',JSON.stringify(sent))}catch(e){}const b=el.querySelector('[data-wg="'+id+'"]');if(b){b.textContent='✓ Envoyé';b.classList.add('sec2')}const ck=el.querySelector('[data-wc="'+id+'"]');if(ck)ck.checked=false;upd()};
+    const todo=()=>[...el.querySelectorAll('[data-wc]:checked')].map(x=>x.dataset.wc).filter(id=>!sent[id]);
+    const upd=()=>{const n=todo().length;const b=$('#wgn',el);b.textContent=n?'Envoyer au suivant coché ('+n+' restant'+(n>1?'s':'')+')':'Aucun client coché à envoyer';b.disabled=!n};
+    const open1=id=>{const c=byId(S.clients,id);if(!c)return;window.open('https://wa.me/'+phoneIntl(c.phone)+'?text='+encodeURIComponent(msg(c.name)),'_blank');mark(id)};
+    el.querySelectorAll('[data-wg]').forEach(b=>b.onclick=()=>open1(b.dataset.wg));
+    el.addEventListener('change',upd);
+    $('#wgn',el).onclick=()=>{const t=todo();if(t.length)open1(t[0])};
+    $('#wgs',el).onclick=async()=>{try{if(navigator.share){await navigator.share({text:msg('')});return}}catch(e){if(e&&e.name==='AbortError')return}window.open('https://wa.me/?text='+encodeURIComponent(msg('')),'_blank')};
+    upd();
+  });
 }
 function openContactPicker(list){
   const L=list.filter(c=>phoneIntl(c.phone)).sort((a,b)=>a.name.localeCompare(b.name));
@@ -2326,7 +2361,7 @@ function openNewSale(clientId){
   if(!S.products.length){toast('Ajoutez d\'abord des produits (onglet Stock)');return}
   const w={clientId:clientId||'',lines:[{pid:'',qty:1,price:null}],type:'cash',sched:[]};
   sheet('Nouvelle vente',`
-    <label for="sc">Client *</label><select id="sc"></select>
+    <label for="sc">Client *</label><select id="sc"></select><button type="button" class="btn sec2 sm" id="ncb" style="margin-top:8px;width:auto">+ Nouveau client</button>
     <div id="ncx" class="card" hidden style="margin-top:8px"><b>Nouveau client</b>
       <label for="ncn">Nom complet *</label><input id="ncn" autocomplete="off" autocapitalize="words">
       <label for="ncp">Téléphone</label><input id="ncp" type="tel" inputmode="tel" placeholder="77 123 45 67">
@@ -2393,6 +2428,8 @@ function openNewSale(clientId){
     // créer un client sans quitter la vente
     sel.onchange=()=>{if(sel.value==='__new'){$('#ncx',el).hidden=false;sel.value='';w.clientId='';setTimeout(()=>$('#ncn',el).focus(),50);return}$('#ncx',el).hidden=true;w.clientId=sel.value};
     $('#ncno',el).onclick=()=>{$('#ncx',el).hidden=true};
+    $('#ncb',el).onclick=()=>{$('#ncx',el).hidden=false;setTimeout(()=>$('#ncn',el).focus(),50)};
+    if(!w.clientId)$('#ncx',el).hidden=false;
     $('#ncok',el).onclick=async()=>{
       const name=val(el,'ncn').trim(),phone=val(el,'ncp').trim(),ne=$('#nce',el);ne.textContent='';
       if(!name){ne.textContent='Écrivez le nom du client.';return}
@@ -2612,10 +2649,15 @@ function showImageOverlay(blob,name,msg){
 }
 /* Livre une image : WhatsApp direct dans la discussion du client (application Android),
    sinon partage du téléphone, sinon enregistrement dans la galerie, sinon image à garder à la main. */
+const waPkg=()=>{try{return localStorage.getItem('sap_wa_pkg')||''}catch(e){return''}};
+function openWaPick(){
+  const cur=waPkg();
+  sheet('WhatsApp utilisé',`<p class="note" style="margin-top:0">Choisissez l'application WhatsApp qui reçoit les factures et rappels sur ce téléphone (application Android).</p><div class="seg" id="wpk" style="flex-direction:column;gap:8px"><button data-v="" aria-pressed="${cur===''}">Automatique</button><button data-v="biz" aria-pressed="${cur==='biz'}">WhatsApp Business</button><button data-v="wa" aria-pressed="${cur==='wa'}">WhatsApp normal</button></div><p class="note">Si le client n'a pas WhatsApp, WhatsApp le dira : utilisez alors le bouton SMS.</p>`,(el,o)=>{el.querySelectorAll('#wpk button').forEach(b=>b.onclick=()=>{try{localStorage.setItem('sap_wa_pkg',b.dataset.v)}catch(e){}el.querySelectorAll('#wpk button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));toast('Enregistré')})});
+}
 async function deliverImage(blob,name,o){
   o=o||{};const ph=o.phone||'';
   if(SAPN){
-    if(ph){try{const r=await SAPN.shareImage({data:await blobB64(blob),name,text:o.text||'',phone:ph});return r&&r.mode==='chat'?'chat':'whatsapp'}catch(e){}}
+    if(ph){try{const r=await SAPN.shareImage({data:await blobB64(blob),name,text:o.text||'',phone:ph,pkg:waPkg()});return r&&r.mode==='chat'?'chat':'whatsapp'}catch(e){}}
     try{await SAPN.saveImage({data:await blobB64(blob),name});return'gallery'}catch(e){}
   }
   const file=new File([blob],name,{type:'image/png'});
@@ -3009,7 +3051,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='04-11 · v25 itinéraire';
+const APP_VER='04-11 · v26 vente rapide';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -3170,11 +3212,32 @@ function openGuided(){
       shell(`<div class="tiles" style="grid-template-columns:1fr"><button type="button" class="tile huge c-esp" data-m="Espèces">${gsvg('cash')}<b style="font-size:28px">Espèces</b></button><button type="button" class="tile huge c-wave" data-m="Wave"><b style="font-size:34px">Wave</b></button><button type="button" class="tile huge c-om" data-m="Orange Money"><b style="font-size:30px">Orange Money</b></button></div>`);
       o.el.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{g.method=b.dataset.m;next()});
     }else if(st==='recap'){
-      const p=prod(),t=total(),sch=g.type==='credit'?buildSchedule(t,g.dep,g.months,addMonths(today(),1),{m:1}):[];
+      const p=prod(),t=total(),sig=t+'|'+g.dep+'|'+g.months,sch=g.type==='credit'?((g.cs&&g.cs.sig===sig)?g.cs.list:buildSchedule(t,g.dep,g.months,addMonths(today(),1),{m:1})):[];
       const payNow=g.type==='credit'?g.dep:t;
       shell(`<div class="gd-card"><div class="row2"><span>${esc(g.client.name)}</span><b>${g.qty} × ${esc(p.name)}</b></div><div class="tot2">${fmtN(t)} FCFA</div>
         ${g.type==='credit'?`<div class="row2"><span>Acompte</span><b>${fmtN(g.dep)}</b></div>${sch.map(e=>`<div class="row2"><span>${e.n}. ${fdate(e.due)}</span><b>${fmtN(e.amount)}</b></div>`).join('')}`:`<div class="row2"><span>Comptant</span><b>${esc(g.method)}</b></div>`}</div>
+        <button type="button" class="gd-no" id="ged" style="margin-bottom:8px">✏️ Modifier le prix et les dates</button>
+        <div id="gem" class="gd-card" hidden style="margin-bottom:10px"><div class="row2"><span>Prix d'une pièce</span><input id="gep" inputmode="numeric" value="${unit()}" style="width:130px;text-align:right"></div>
+        ${g.type==='credit'?`<div class="row2"><span>Acompte</span><input id="ged0" inputmode="numeric" value="${g.dep}" style="width:130px;text-align:right"></div>${sch.map((e,i)=>`<div class="row2" style="gap:6px"><input type="date" data-ed="${i}" value="${e.due}" style="flex:1;min-width:0"><input inputmode="numeric" data-ea="${i}" value="${e.amount}" style="width:110px;text-align:right"></div>`).join('')}`:''}
+        <div class="gd-err" id="gee"></div><button type="button" class="btn" id="geok">Appliquer</button></div>
         <div class="gd-err" id="gp" style="font-weight:600;color:var(--ink)"></div><div class="gd-err" id="ge"></div><button type="button" class="gd-ok" id="go" aria-label="Valider la vente">${gsvg('ok')}</button><button type="button" class="gd-no" id="gx">Recommencer</button>`);
+      $('#ged',o.el).onclick=()=>{const m=$('#gem',o.el);m.hidden=!m.hidden};
+      $('#geok',o.el).onclick=()=>{
+        const n_=id=>Math.max(0,Math.round(Number(String(($('#'+id,o.el)||{}).value||'').replace(/\s/g,'').replace(',','.'))||0)),er=$('#gee',o.el);
+        const pr=n_('gep');if(!pr){er.textContent='Mettez un prix.';return}
+        const T=pr*g.qty;
+        if(g.type==='credit'){
+          const dep=n_('ged0'),L=[...o.el.querySelectorAll('[data-ed]')].map(x=>({n:+x.dataset.ed+1,due:x.value,amount:0}));
+          const am=[...o.el.querySelectorAll('[data-ea]')].map(x=>Math.round(Number(String(x.value).replace(/\s/g,''))||0));
+          L.forEach((x,i)=>x.amount=am[i]);
+          if(L.some(x=>!x.due)){er.textContent='Mettez toutes les dates.';return}
+          if(L.some(x=>x.amount<=0)){er.textContent='Chaque échéance doit avoir un montant.';return}
+          const sum=dep+L.reduce((a,x)=>a+x.amount,0);
+          if(sum!==T){er.textContent='Acompte + échéances = '+fmtN(sum)+' mais le total est '+fmtN(T)+'. Ajustez les montants.';return}
+          g.price=pr;g.dep=dep;g.cs={sig:T+'|'+dep+'|'+g.months,list:L};
+        }else g.price=pr;
+        draw();
+      };
       const gpEl=$('#gp',o.el);
       const gpDraw=()=>{gpEl.innerHTML=g.pos?'📍 Position du client enregistrée (±'+g.pos.acc+' m)':g.posBusy?'📍 Recherche de la position…':'<button type="button" class="gd-no" id="gpb">📍 Enregistrer la position du client</button>'+(g.posErr?'<div style="color:var(--bad)">'+esc(g.posErr)+'</div>':'');const b=$('#gpb',o.el);if(b)b.onclick=()=>{g.posTried=1;gpGet()}};
       const gpGet=()=>{g.posBusy=1;g.posErr='';gpDraw();getPos().then(p=>{g.pos=p}).catch(e=>{g.posErr=String((e&&e.message)||e)}).finally(()=>{g.posBusy=0;if(document.body.contains(gpEl))gpDraw()})};
