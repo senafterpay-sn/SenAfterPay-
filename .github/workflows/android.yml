@@ -378,7 +378,11 @@ jobs:
                       i.putExtra(Intent.EXTRA_STREAM, uri);
                       if (text != null && !text.isEmpty()) i.putExtra(Intent.EXTRA_TEXT, text);
                       i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                      String pkg = installed("com.whatsapp") ? "com.whatsapp" : (installed("com.whatsapp.w4b") ? "com.whatsapp.w4b" : null);
+                      String want = call.getString("pkg", "");
+                      String wa = "com.whatsapp", biz = "com.whatsapp.w4b";
+                      String pkg;
+                      if ("biz".equals(want)) pkg = installed(biz) ? biz : (installed(wa) ? wa : null);
+                      else pkg = installed(wa) ? wa : (installed(biz) ? biz : null);
                       String mode;
                       if (pkg != null) {
                           if (!phone.isEmpty()) i.putExtra("jid", phone + "@s.whatsapp.net");
