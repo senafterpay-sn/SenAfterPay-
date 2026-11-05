@@ -404,6 +404,23 @@ jobs:
               }
 
               @PluginMethod
+              public void addEvent(PluginCall call) {
+                  try {
+                      long b = Long.parseLong(call.getString("begin", "0"));
+                      Intent i = new Intent(Intent.ACTION_INSERT);
+                      i.setData(android.provider.CalendarContract.Events.CONTENT_URI);
+                      i.putExtra(android.provider.CalendarContract.Events.TITLE, call.getString("title", ""));
+                      i.putExtra(android.provider.CalendarContract.Events.DESCRIPTION, call.getString("desc", ""));
+                      i.putExtra(android.provider.CalendarContract.EXTRA_EVENT_BEGIN_TIME, b);
+                      i.putExtra(android.provider.CalendarContract.EXTRA_EVENT_END_TIME, b + 15 * 60 * 1000L);
+                      getActivity().startActivity(i);
+                      call.resolve();
+                  } catch (Exception e) {
+                      call.reject("Calendrier indisponible : " + e.getMessage());
+                  }
+              }
+
+              @PluginMethod
               public void notifyPermission(PluginCall call) {
                   try {
                       if (Build.VERSION.SDK_INT >= 33
