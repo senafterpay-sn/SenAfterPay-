@@ -1297,7 +1297,7 @@ function openCb(sid,n){
     <div class="list">${opts.map((x,i)=>`<button type="button" class="btn sec2" style="margin-bottom:8px" data-cbq="${i}">${x[0]}</button>`).join('')}</div>
     <label for="cbd">Ou choisir la date et l'heure</label><input id="cbd" type="datetime-local">
     <label for="cbn">Note (facultatif)</label><input id="cbn" placeholder="Ex. a dit : rappelle ce soir">
-    <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="cbp" checked style="width:20px;height:20px"> Ajouter aussi au calendrier du téléphone (sonne même si l'application est fermée)</label>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="cbp" checked style="width:20px;height:20px"> Régler aussi une alarme sur le téléphone (sonne même si l'application est fermée)</label>
     <button type="button" class="btn" id="cbok" style="margin-top:12px">Enregistrer le rappel</button><p class="note" id="cbe" style="color:var(--bad)"></p>`,(el,o)=>{
     let sel=null;
     el.querySelectorAll('[data-cbq]').forEach(b=>b.onclick=()=>{sel=opts[+b.dataset.cbq][1];el.querySelectorAll('[data-cbq]').forEach(x=>x.classList.toggle('sec2',x!==b));$('#cbd',el).value=''});
@@ -1316,9 +1316,35 @@ function openCb(sid,n){
 function cbPhone(c,doc){
   const title='Rappeler '+(c?c.name:'client')+' (SenAfterPay)',desc=(c&&c.phone?'Tél. '+c.phone+'. ':'')+(doc.note||''),b=new Date(doc.at).getTime();
   try{
+    const dt=new Date(b),soon=b-Date.now()<23*3600e3;
+    if(soon){
+      if(SAPN&&SAPN.addAlarm){SAPN.addAlarm({hour:dt.getHours(),minutes:dt.getMinutes(),msg:title}).catch(()=>{});return}
+      if(/Android/i.test(navigator.userAgent)){location.href='intent:#Intent;action=android.intent.action.SET_ALARM;i.android.intent.extra.alarm.HOUR='+dt.getHours()+';i.android.intent.extra.alarm.MINUTES='+dt.getMinutes()+';S.android.intent.extra.alarm.MESSAGE='+encodeURIComponent(title)+';end';return}
+    }
     if(SAPN&&SAPN.addEvent){SAPN.addEvent({title,desc,begin:String(b)}).catch(()=>{});return}
     if(/Android/i.test(navigator.userAgent)){const q=encodeURIComponent;location.href='intent:#Intent;action=android.intent.action.INSERT;type=vnd.android.cursor.item/event;S.title='+q(title)+';S.description='+q(desc)+';l.beginTime='+b+';l.endTime='+(b+9e5)+';end'}
   }catch(e){}
+}
+let RING=null;
+function cbRing(x,msg){
+  if(document.getElementById('cbring'))return;
+  const c=byId(S.clients,x.clientId),ph=phoneIntl(c&&c.phone);
+  const d=document.createElement('div');d.id='cbring';
+  d.style.cssText='position:fixed;inset:0;z-index:99999;background:#0b1020ee;display:flex;align-items:center;justify-content:center;padding:20px';
+  d.innerHTML=`<div style="background:#fff;color:#111;border-radius:20px;padding:22px;max-width:380px;width:100%;text-align:center"><div style="font-size:54px">📞</div><h2 style="margin:6px 0">Rappeler ${esc(c?c.name:'le client')}</h2><p style="margin:0 0 4px">${esc(x.note||'')}</p><p style="margin:0 0 14px;color:#555">Prévu à ${new Date(x.at).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</p>
+    ${ph?`<a href="tel:+${ph}" class="btn" style="display:block;text-decoration:none;margin-bottom:8px" data-rstop>Appeler maintenant</a>`:''}
+    <button type="button" class="btn sec2" style="margin-bottom:8px" data-rsnz>Dans 1 heure</button>
+    <button type="button" class="btn line" data-rdone>Fait ✓</button></div>`;
+  document.body.appendChild(d);
+  const stop=()=>{clearInterval(RING);RING=null;d.remove()};
+  const beep=()=>{try{const A=new (window.AudioContext||window.webkitAudioContext)(),o=A.createOscillator(),g=A.createGain();o.type='square';o.frequency.value=880;g.gain.value=.25;o.connect(g);g.connect(A.destination);o.start();setTimeout(()=>{o.stop();A.close()},350)}catch(e){}try{navigator.vibrate&&navigator.vibrate([400,200,400])}catch(e){}};
+  beep();let k=0;RING=setInterval(()=>{if(++k>40)stop();else beep()},1500);
+  d.onclick=e=>{
+    if(e.target.closest('[data-rdone]')){stop();put('reminders',x.id,{...x,done:true,doneAt:new Date().toISOString()}).catch(()=>{})}
+    else if(e.target.closest('[data-rsnz]')){stop();const at=new Date(Date.now()+3600e3).toISOString();put('reminders',x.id,{...x,at}).then(()=>toast('Je vous rappelle dans 1 heure')).catch(()=>{})}
+    else if(e.target.closest('[data-rstop]'))stop();
+    else if(e.target===d)stop();
+  };
 }
 function cbAlert(msg){
   toast(msg);try{navigator.vibrate&&navigator.vibrate([300,150,300])}catch(e){}
@@ -1332,11 +1358,11 @@ function cbTick(){
   let ch=false;
   S.reminders.filter(x=>x.kind==='cb'&&!x.done&&x.by===ME.id&&new Date(x.at).getTime()<=Date.now()).forEach(x=>{
     const k=x.id+'@'+x.at;if(seen.has(k))return;seen.add(k);ch=true;
-    const c=byId(S.clients,x.clientId);cbAlert('📞 Rappeler '+(c?c.name:'le client')+(x.note?' : '+x.note:''));
+    const c=byId(S.clients,x.clientId),m='📞 Rappeler '+(c?c.name:'le client')+(x.note?' : '+x.note:'');cbAlert(m);cbRing(x,m);
   });
   if(ch){try{localStorage.setItem('sap_cb_n',JSON.stringify([...seen].slice(-200)))}catch(e){}rerender()}
 }
-setInterval(cbTick,30000);setTimeout(cbTick,4000);
+setInterval(cbTick,15000);setTimeout(cbTick,4000);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')cbTick()});
 document.addEventListener('click',async e=>{
   const a=e.target.closest&&e.target.closest('[data-cb]');
   if(a){e.preventDefault();e.stopPropagation();const[sid,n]=a.dataset.cb.split('|');openCb(sid,Number(n));return}
@@ -1447,7 +1473,7 @@ function vBooks(v){
 }
 function vClients(v){
   const q=query.toLowerCase();const P=pays(),now=today();
-  const L=S.clients.filter(c=>!q||(c.name+' '+(c.phone||'')+' '+c.id).toLowerCase().includes(q)).sort((a,b)=>a.name.localeCompare(b.name));
+  const L=S.clients.filter(c=>!q||(c.name+' '+(c.phone||'')+' '+c.id+' '+(c.notes||[]).map(n=>n.txt).join(' ')).toLowerCase().includes(q)).sort((a,b)=>a.name.localeCompare(b.name));
   const owe=c=>S.sales.filter(s=>s.clientId===c.id&&!isCancelled(s)).reduce((a,s)=>a+saleState(s,P,now).balance,0);
   v.innerHTML=`<div class="sec"><h2>Clients</h2><span>${L.length}</span></div>
   <input class="search" id="q" type="search" placeholder="Nom ou téléphone" value="${esc(query)}">
@@ -2312,6 +2338,11 @@ function openClient(id){
     ${cc.lat!=null?`<div id="hmap" style="height:210px;border-radius:12px;margin-top:10px;border:2px solid #1d6fe0;overflow:hidden;background:#e8eef7"></div>`:''}
     ${cc.lat!=null?`<p class="note" style="margin:4px 0 0">Position GPS enregistrée le ${fdate(String(cc.geoAt||'').slice(0,10))} · précision ${cc.acc||'?'} m</p>`:''}
     ${cc.geo||cc.address||cc.city?`<a class="btn sec2" style="display:block;text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" ${cc.lat!=null?`data-go="1" data-ll="${cc.lat},${cc.lng}" `:''}href="${esc(cc.lat!=null?geoHref(cc):(cc.geo||('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent([cc.address,cc.city,'Sénégal'].filter(Boolean).join(', ')))))}">${cc.lat!=null?'📍 Y aller (itinéraire depuis ma position)':cc.geo?'Ouvrir la position du client':'Chercher l\'adresse sur la carte'}</a>`:'<p class="note">Aucune localisation. Touchez « Modifier » pour l\'ajouter.</p>'}
+    <div class="card" style="margin-top:12px"><b>📝 Notes sur ce client</b>
+      <textarea id="nt" rows="3" placeholder="Ex. Aime les bols dorés, rappeler après la paie, sa fille se marie en janvier…" style="width:100%;margin-top:8px"></textarea>
+      <button type="button" class="btn sec2" id="nta" style="margin-top:8px">Ajouter la note</button>
+      ${(cc.notes&&cc.notes.length)?`<div class="list" style="margin-top:8px">${[...cc.notes].sort((a,b)=>String(b.t).localeCompare(String(a.t))).map(n=>`<div class="row" style="align-items:flex-start"><div class="l"><small>${esc(fdate(String(n.t).slice(0,10)))} · ${esc(n.by||'')}</small><div style="white-space:pre-wrap;margin-top:2px">${esc(n.txt)}</div></div>${(ME.isAdmin||n.uid===ME.id)?`<div class="r"><button type="button" class="btn line sm" style="width:auto" data-ntdel="${n.id}">Suppr.</button></div>`:''}</div>`).join('')}</div>`:'<p class="note" style="margin:6px 0 0">Aucune note pour le moment.</p>'}
+    </div>
     ${cc.lat!=null?'<button type="button" class="btn sec2" id="cmp" style="margin-top:10px">🧭 Guide à pied (flèche et distance, sans route)</button>':''}
     ${phoneIntl(cc.phone)&&comp().waGroup?'<button type="button" class="btn sec2" id="wag" style="margin-top:10px">Inviter au groupe WhatsApp</button>':''}
     <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="ns">Nouvelle vente</button><button class="btn line" id="ed">Modifier</button></div>
@@ -2323,6 +2354,10 @@ function openClient(id){
     $('#setgeo',o.el).onclick=()=>saveClientGeo(id,draw);
     if(cc.lat!=null)houseMap($('#hmap',o.el),cc);
     const cb_=$('#cmp',o.el);if(cb_)cb_.onclick=()=>openCompass(cc);
+    const nta=$('#nta',o.el);if(nta)nta.onclick=async()=>{const t=($('#nt',o.el).value||'').trim();if(!t){toast('Écrivez la note d\'abord');return}
+      const cur=byId(S.clients,id)||cc;
+      try{await put('clients',id,{...cur,notes:[...(cur.notes||[]),{id:uid('n'),t:new Date().toISOString(),by:ME.name||'',uid:ME.id||'',txt:t}]});toast('Note enregistrée')}catch(e){toast('Enregistrement impossible')}};
+    o.el.querySelectorAll('[data-ntdel]').forEach(b=>b.onclick=async()=>{if(!confirm('Supprimer cette note ?'))return;const cur=byId(S.clients,id)||cc;try{await put('clients',id,{...cur,notes:(cur.notes||[]).filter(n=>n.id!==b.dataset.ntdel)})}catch(e){toast('Suppression impossible')}});
     const dc=$('#delc',o.el);if(dc)dc.onclick=async()=>{if(await askDelClient(id))o.close()};
     const wg=$('#wag',o.el);if(wg)wg.onclick=()=>{const ph=phoneIntl(cc.phone),g=comp().waGroup;window.open('https://wa.me/'+ph+'?text='+encodeURIComponent('Bonjour '+cc.name+', rejoignez le groupe WhatsApp SenAfterPay pour recevoir nos nouveautés et rappels : '+g),'_blank')};
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
@@ -3143,7 +3178,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='04-11 · v27 rappels';
+const APP_VER='07-11 · v28 notes et sonnerie';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -3480,17 +3515,22 @@ async function saveFile(name,html){
 /* ========= Démarrage ========= */
 (function(){
   let last=0,leaving=false;
-  try{history.replaceState({g:0},'');history.pushState({g:1},'')}catch(e){return}
-  addEventListener('popstate',()=>{
-    if(leaving)return;
+  const guard=()=>{try{if(!history.state||history.state.g!==1)history.pushState({g:1},'')}catch(e){}};
+  try{history.replaceState({g:0},'')}catch(e){return}
+  guard();
+  const onBack=()=>{
     const t=stack[stack.length-1];
-    if(t){t.close();history.pushState({g:1},'');return}
-    const ov=document.getElementById('imgx');if(ov){ov.click();history.pushState({g:1},'');return}
-    if(tab!=='home'){tab='home';query='';render();window.scrollTo(0,0);history.pushState({g:1},'');return}
+    if(t){t.close();guard();return}
+    const ov=document.getElementById('imgx')||document.getElementById('cbring');if(ov){ov.click();guard();return}
+    if(tab!=='home'){tab='home';query='';render();window.scrollTo(0,0);guard();return}
     const n=Date.now();
     if(n-last<2500){leaving=true;history.back();setTimeout(()=>history.back(),60);return}
-    last=n;toast('Appuyez encore sur Retour pour quitter');history.pushState({g:1},'');
-  });
+    last=n;toast('Appuyez encore sur Retour pour quitter');guard();
+  };
+  addEventListener('popstate',()=>{if(leaving)return;onBack()});
+  document.addEventListener('backbutton',e=>{if(leaving)return;e.preventDefault&&e.preventDefault();onBack()},false);
+  ['pointerdown','touchstart','click'].forEach(ev=>document.addEventListener(ev,guard,true));
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')guard()});
 })();
 $('#tabs').addEventListener('click',e=>{const b=e.target.closest('button[data-t]');if(!b)return;tab=b.dataset.t;query='';render();window.scrollTo(0,0)});
 init();
