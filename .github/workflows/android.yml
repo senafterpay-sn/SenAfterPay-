@@ -84,6 +84,7 @@ jobs:
               <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
               <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
               <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
               <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
               <queries>
@@ -400,6 +401,21 @@ jobs:
                       call.resolve(r);
                   } catch (Exception e) {
                       call.reject("Partage impossible : " + e.getMessage());
+                  }
+              }
+
+              @PluginMethod
+              public void addAlarm(PluginCall call) {
+                  try {
+                      Intent i = new Intent(android.provider.AlarmClock.ACTION_SET_ALARM);
+                      i.putExtra(android.provider.AlarmClock.EXTRA_HOUR, call.getInt("hour", 0));
+                      i.putExtra(android.provider.AlarmClock.EXTRA_MINUTES, call.getInt("minutes", 0));
+                      i.putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, call.getString("msg", "Rappel SenAfterPay"));
+                      i.putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true);
+                      getActivity().startActivity(i);
+                      call.resolve();
+                  } catch (Exception e) {
+                      call.reject("Alarme indisponible : " + e.getMessage());
                   }
               }
 
