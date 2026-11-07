@@ -1201,6 +1201,7 @@ function render(){
   document.querySelectorAll('#tabs button').forEach(b=>b.setAttribute('aria-selected',b.dataset.t===(tab==='stock'?'more':tab)));
   if(!ready){v.innerHTML='<div class="empty">Chargement des données…</div>';return}
   ({home:vHome,sales:vSales,books:vBooks,due:vDue,clients:vClients,more:vMore,stock:vStock})[tab](v);
+  if(tab==='home'||tab==='due'){try{const h=cbCard();if(h)v.insertAdjacentHTML('afterbegin',h)}catch(e){}}
 }
 const nk=n=>n>=1e6?(n/1e6).toFixed(n%1e6?1:0).replace('.',',')+' M':n>=1000?Math.round(n/1000)+' k':String(Math.round(n));
 function chartHTML(byDay,from,to){
@@ -1271,12 +1272,77 @@ function dueActs(e){
   const ph=phoneIntl(cl&&cl.phone),txt=encodeURIComponent(reminderText(e)),k=e.sale.id+'|'+e.n;
   const rm=S.reminders.find(x=>x.id===e.sale.id+'_'+e.n);
   const hb=e.balance>0&&!window.__noPayBtn?`<button type="button" class="wa" data-paydue="${e.sale.id}|${e.n}">Payer</button>`:'';
-  const gh=geoHref(cl),rt=gh?`<a href="${esc(gh)}" target="_blank" rel="noopener" data-go="1">📍 Y aller</a>`:'';
+  const gh=geoHref(cl),rt=gh?`<a href="${esc(gh)}" target="_blank" rel="noopener" data-go="1" ${cl&&cl.lat!=null?`data-ll="${cl.lat},${cl.lng}"`:''}>📍 Y aller</a>`:'';
   const chan={tel:'appel',sms:'SMS',wa:'WhatsApp',copy:'contact'};
   if(!ph)return '<div class="acts">'+rt+hb+'</div><p class="note" style="margin:6px 0 0">Aucun numéro valide pour ce client : ajoutez-le sur sa fiche pour pouvoir l\'appeler ou lui écrire.</p>';
   const state=d<0?'En retard de '+(-d)+' jour(s)':d===0?"Paiement prévu aujourd'hui":d<=5?'Rappel à envoyer : dans '+d+' jour(s)':'';
-  return `<div class="acts"><a href="tel:+${ph}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|tel">Appeler</a><a href="sms:+${ph}?body=${txt}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|sms">SMS</a><button type="button" class="wa" data-wasend="${k}">WhatsApp</button>${rt}${hb}</div>${rm?`<p class="note" style="margin:0">Rappel envoyé le ${fdate(rm.at)} (${chan[rm.channel]||rm.channel})</p>`:(state?`<p class="note" style="margin:0">${state}</p>`:'')}`;
+  return `<div class="acts"><a href="tel:+${ph}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|tel">Appeler</a><a href="sms:+${ph}?body=${txt}" ${window.SAP_STANDALONE?'':'target="_blank" rel="noopener"'} data-rem="${k}|sms">SMS</a><button type="button" class="wa" data-wasend="${k}">WhatsApp</button>${rt}${hb}<button type="button" data-cb="${e.sale.id}|${e.n}">⏰ Rappeler plus tard</button></div>${rm?`<p class="note" style="margin:0">Rappel envoyé le ${fdate(rm.at)} (${chan[rm.channel]||rm.channel})</p>`:(state?`<p class="note" style="margin:0">${state}</p>`:'')}`;
 }
+const cbDocs=()=>S.reminders.filter(x=>x.kind==='cb'&&!x.done&&(ME.isAdmin||x.by===ME.id)).sort((a,b)=>String(a.at).localeCompare(String(b.at)));
+const cbWhen=iso=>{const d=new Date(iso);return fdate(iso.slice(0,10)===d.toISOString().slice(0,10)?localDay(d):localDay(d))+' à '+d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})};
+const localDay=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+function cbCard(){
+  const L=cbDocs();if(!L.length)return '';
+  const now=Date.now();
+  return `<div class="card" style="margin:10px 0;border:1.5px solid var(--gold)"><b>📞 À rappeler (${L.length})</b><div class="list" style="margin-top:6px">${L.map(x=>{
+    const c=byId(S.clients,x.clientId),ph=phoneIntl(c&&c.phone),late=new Date(x.at).getTime()<=now;
+    return `<div class="row" style="align-items:center"><div class="l"><b>${esc(c?c.name:'Client')}</b><small style="${late?'color:var(--bad);font-weight:700':''}">${late?'À rappeler maintenant · ':''}${cbWhen(x.at)}${x.note?' · '+esc(x.note):''}</small></div><div class="r" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${ph?`<a class="btn sm" style="width:auto;text-decoration:none" href="tel:+${ph}">Appeler</a>`:''}<button type="button" class="btn sec2 sm" style="width:auto" data-cb="${x.saleId}|${x.n}">Reporter</button><button type="button" class="btn line sm" style="width:auto" data-cbdone="${x.id}">Fait ✓</button></div></div>`}).join('')}</div></div>`;
+}
+function openCb(sid,n){
+  const s=byId(S.sales,sid);if(!s)return;const c=byId(S.clients,s.clientId),id='cb_'+sid+'_'+n;
+  const at=(dd,h,m)=>{const d=new Date();d.setDate(d.getDate()+dd);d.setHours(h,m||0,0,0);return d};
+  const opts=[['Dans 1 heure',new Date(Date.now()+3600e3)],['Ce soir 18 h',at(0,18)],['Demain 9 h',at(1,9)],['Dans 2 jours 9 h',at(2,9)],['Dans 3 jours 9 h',at(3,9)]].filter(x=>x[1].getTime()>Date.now()+60e3);
+  sheet('Me rappeler d\'appeler',`<div class="card"><b>${esc(c?c.name:'Client')}</b><div class="note" style="margin:2px 0 0">${esc(ref(s))} · tranche ${n}</div></div>
+    <p class="note">Quand voulez-vous être prévenu ?</p>
+    <div class="list">${opts.map((x,i)=>`<button type="button" class="btn sec2" style="margin-bottom:8px" data-cbq="${i}">${x[0]}</button>`).join('')}</div>
+    <label for="cbd">Ou choisir la date et l'heure</label><input id="cbd" type="datetime-local">
+    <label for="cbn">Note (facultatif)</label><input id="cbn" placeholder="Ex. a dit : rappelle ce soir">
+    <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="cbp" checked style="width:20px;height:20px"> Ajouter aussi au calendrier du téléphone (sonne même si l'application est fermée)</label>
+    <button type="button" class="btn" id="cbok" style="margin-top:12px">Enregistrer le rappel</button><p class="note" id="cbe" style="color:var(--bad)"></p>`,(el,o)=>{
+    let sel=null;
+    el.querySelectorAll('[data-cbq]').forEach(b=>b.onclick=()=>{sel=opts[+b.dataset.cbq][1];el.querySelectorAll('[data-cbq]').forEach(x=>x.classList.toggle('sec2',x!==b));$('#cbd',el).value=''});
+    $('#cbd',el).onchange=()=>{sel=null;el.querySelectorAll('[data-cbq]').forEach(x=>x.classList.add('sec2'))};
+    $('#cbok',el).onclick=async()=>{
+      const dv=val(el,'cbd'),d=dv?new Date(dv):sel;
+      if(!d||isNaN(d)){$('#cbe',el).textContent='Choisissez quand vous rappeler.';return}
+      if(d.getTime()<Date.now()-60e3){$('#cbe',el).textContent='Cette heure est déjà passée.';return}
+      const doc={kind:'cb',saleId:sid,n:Number(n),clientId:s.clientId,at:d.toISOString(),note:val(el,'cbn').trim(),by:ME.id||'',done:false,created:new Date().toISOString()};
+      try{await put('reminders',id,doc);try{const k=JSON.parse(localStorage.getItem('sap_cb_n')||'[]').filter(z=>!z.startsWith(id));localStorage.setItem('sap_cb_n',JSON.stringify(k))}catch(e){}
+        if($('#cbp',el).checked)cbPhone(c,doc);
+        toast('Rappel enregistré : '+cbWhen(doc.at));o.close()}catch(e){$('#cbe',el).textContent='Enregistrement impossible : '+String((e&&e.message)||e).slice(0,80)}
+    };
+  });
+}
+function cbPhone(c,doc){
+  const title='Rappeler '+(c?c.name:'client')+' (SenAfterPay)',desc=(c&&c.phone?'Tél. '+c.phone+'. ':'')+(doc.note||''),b=new Date(doc.at).getTime();
+  try{
+    if(SAPN&&SAPN.addEvent){SAPN.addEvent({title,desc,begin:String(b)}).catch(()=>{});return}
+    if(/Android/i.test(navigator.userAgent)){const q=encodeURIComponent;location.href='intent:#Intent;action=android.intent.action.INSERT;type=vnd.android.cursor.item/event;S.title='+q(title)+';S.description='+q(desc)+';l.beginTime='+b+';l.endTime='+(b+9e5)+';end'}
+  }catch(e){}
+}
+function cbAlert(msg){
+  toast(msg);try{navigator.vibrate&&navigator.vibrate([300,150,300])}catch(e){}
+  try{const A=new (window.AudioContext||window.webkitAudioContext)(),o=A.createOscillator(),gn=A.createGain();o.frequency.value=880;gn.gain.value=.2;o.connect(gn);gn.connect(A.destination);o.start();setTimeout(()=>{o.stop();A.close()},500)}catch(e){}
+  if(SAPN){SAPN.notify({title:'SenAfterPay · Rappel',body:msg}).catch(()=>{});return}
+  try{if('Notification' in window&&Notification.permission==='granted')new Notification('SenAfterPay',{body:msg})}catch(e){}
+}
+function cbTick(){
+  if(!ready||!ME.id)return;
+  let seen;try{seen=new Set(JSON.parse(localStorage.getItem('sap_cb_n')||'[]'))}catch(e){seen=new Set()}
+  let ch=false;
+  S.reminders.filter(x=>x.kind==='cb'&&!x.done&&x.by===ME.id&&new Date(x.at).getTime()<=Date.now()).forEach(x=>{
+    const k=x.id+'@'+x.at;if(seen.has(k))return;seen.add(k);ch=true;
+    const c=byId(S.clients,x.clientId);cbAlert('📞 Rappeler '+(c?c.name:'le client')+(x.note?' : '+x.note:''));
+  });
+  if(ch){try{localStorage.setItem('sap_cb_n',JSON.stringify([...seen].slice(-200)))}catch(e){}rerender()}
+}
+setInterval(cbTick,30000);setTimeout(cbTick,4000);
+document.addEventListener('click',async e=>{
+  const a=e.target.closest&&e.target.closest('[data-cb]');
+  if(a){e.preventDefault();e.stopPropagation();const[sid,n]=a.dataset.cb.split('|');openCb(sid,Number(n));return}
+  const d=e.target.closest&&e.target.closest('[data-cbdone]');
+  if(d){e.preventDefault();e.stopPropagation();const x=S.reminders.find(z=>z.id===d.dataset.cbdone);if(x){try{await put('reminders',x.id,{...x,done:true,doneAt:new Date().toISOString()});toast('Rappel terminé')}catch(err){toast('Impossible de terminer le rappel')}}}
+},true);
 function dueRow(e,showDate){
   const[c,l]=dueTag(e.status),cl=e.client;
   const acts=dueActs(e);
@@ -2083,12 +2149,14 @@ function getPos(goal){
     tm=setTimeout(fin,20000);
   });
 }
-document.addEventListener('click',async e=>{
+document.addEventListener('click',e=>{
   const a=e.target.closest&&e.target.closest('a[data-go]');if(!a)return;
   e.preventDefault();
-  let h=a.href;
-  try{const g=await getPos(80);h+='&origin='+g.lat+','+g.lng}catch(x){}
-  window.open(h,'_blank','noopener');
+  const ll=a.dataset.ll,web=a.href.replace(/&origin=[^&]*/,'');
+  if(ll&&/Android/i.test(navigator.userAgent)){
+    location.href='google.navigation:q='+ll+'&mode=d';
+    setTimeout(()=>{if(document.visibilityState==='visible')window.open(web,'_blank','noopener')},1800);
+  }else window.open(web,'_blank','noopener');
 },true);
 const geoUrl=g=>'https://www.google.com/maps?q='+g.lat+','+g.lng;
 function vcard(c){
@@ -2192,6 +2260,27 @@ function openClientForm(id){
     };
   });
 }
+function openCompass(c){
+  const R=6371000,rad=x=>x*Math.PI/180;
+  const dist=(a,b,c2,d)=>{const p=rad(c2-a),q=rad(d-b),h=Math.sin(p/2)**2+Math.cos(rad(a))*Math.cos(rad(c2))*Math.sin(q/2)**2;return 2*R*Math.asin(Math.sqrt(h))};
+  const brg=(a,b,c2,d)=>{const y=Math.sin(rad(d-b))*Math.cos(rad(c2)),x=Math.cos(rad(a))*Math.sin(rad(c2))-Math.sin(rad(a))*Math.cos(rad(c2))*Math.cos(rad(d-b));return(Math.atan2(y,x)*180/Math.PI+360)%360};
+  const card=b=>['nord','nord-est','est','sud-est','sud','sud-ouest','ouest','nord-ouest'][Math.round(b/45)%8];
+  sheet('Guide à pied · '+c.name,`<div style="text-align:center"><div id="cpa" style="font-size:110px;line-height:1.1;transition:transform .25s">⬆️</div><div id="cpd" style="font:800 40px system-ui;margin:6px 0">…</div><p class="note" id="cpn">Recherche de votre position…</p></div><p class="note">La flèche montre la direction de la maison à vol d'oiseau, utile quand la carte n'a pas de route. Marchez, la flèche et la distance se mettent à jour. Tenez le téléphone à plat.</p>`,(el,o)=>{
+    let pos=null,head=null,wid=null;
+    const draw=()=>{
+      if(!pos)return;
+      const d=dist(pos.latitude,pos.longitude,c.lat,c.lng),b=brg(pos.latitude,pos.longitude,c.lat,c.lng);
+      $('#cpd',el).textContent=d<15?'Vous y êtes ✓':(d>=1000?(d/1000).toFixed(2)+' km':Math.round(d)+' m');
+      const rot=head==null?b:(b-head+360)%360;
+      $('#cpa',el).style.transform='rotate('+rot+'deg)';
+      $('#cpn',el).textContent=(head==null?'Boussole du téléphone indisponible : la flèche pointe vers '+card(b)+' (le nord est en haut). ':'Direction : '+card(b)+'. ')+'Précision GPS ±'+Math.round(pos.accuracy||0)+' m';
+    };
+    const oh=e=>{let h=null;if(e.webkitCompassHeading!=null)h=e.webkitCompassHeading;else if(e.alpha!=null&&(e.absolute||e.type==='deviceorientationabsolute'))h=(360-e.alpha)%360;if(h!=null){head=h;draw()}};
+    window.addEventListener('deviceorientationabsolute',oh,true);window.addEventListener('deviceorientation',oh,true);
+    try{wid=navigator.geolocation.watchPosition(p=>{pos=p.coords;draw()},e=>{$('#cpn',el).textContent=e.code===1?'Position refusée : autorisez la localisation.':'Position introuvable : sortez à l\'air libre.'},{enableHighAccuracy:true,maximumAge:0,timeout:30000})}catch(e){$('#cpn',el).textContent='Position non disponible.'}
+    const oc=o.close;o.close=()=>{try{navigator.geolocation.clearWatch(wid)}catch(e){}window.removeEventListener('deviceorientationabsolute',oh,true);window.removeEventListener('deviceorientation',oh,true);oc()};
+  });
+}
 const HOUSE_R=25;
 function houseIcon(){return L.divIcon({className:'',html:'<div style="width:30px;height:30px;border-radius:50%;background:#1d6fe0;color:#fff;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:17px;box-shadow:0 1px 5px #0006">🏠</div>',iconSize:[30,30],iconAnchor:[15,15]})}
 function houseLayer(cc,layer){
@@ -2222,7 +2311,8 @@ function openClient(id){
     <button type="button" class="btn sec2" id="setgeo" style="margin-top:10px">📍 ${cc.lat!=null?'Mettre à jour la position GPS (je suis chez le client)':'Enregistrer la position GPS (je suis chez le client)'}</button>
     ${cc.lat!=null?`<div id="hmap" style="height:210px;border-radius:12px;margin-top:10px;border:2px solid #1d6fe0;overflow:hidden;background:#e8eef7"></div>`:''}
     ${cc.lat!=null?`<p class="note" style="margin:4px 0 0">Position GPS enregistrée le ${fdate(String(cc.geoAt||'').slice(0,10))} · précision ${cc.acc||'?'} m</p>`:''}
-    ${cc.geo||cc.address||cc.city?`<a class="btn sec2" style="display:block;text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" ${cc.lat!=null?'data-go="1" ':''}href="${esc(cc.lat!=null?geoHref(cc):(cc.geo||('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent([cc.address,cc.city,'Sénégal'].filter(Boolean).join(', ')))))}">${cc.lat!=null?'📍 Y aller (itinéraire depuis ma position)':cc.geo?'Ouvrir la position du client':'Chercher l\'adresse sur la carte'}</a>`:'<p class="note">Aucune localisation. Touchez « Modifier » pour l\'ajouter.</p>'}
+    ${cc.geo||cc.address||cc.city?`<a class="btn sec2" style="display:block;text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" ${cc.lat!=null?`data-go="1" data-ll="${cc.lat},${cc.lng}" `:''}href="${esc(cc.lat!=null?geoHref(cc):(cc.geo||('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent([cc.address,cc.city,'Sénégal'].filter(Boolean).join(', ')))))}">${cc.lat!=null?'📍 Y aller (itinéraire depuis ma position)':cc.geo?'Ouvrir la position du client':'Chercher l\'adresse sur la carte'}</a>`:'<p class="note">Aucune localisation. Touchez « Modifier » pour l\'ajouter.</p>'}
+    ${cc.lat!=null?'<button type="button" class="btn sec2" id="cmp" style="margin-top:10px">🧭 Guide à pied (flèche et distance, sans route)</button>':''}
     ${phoneIntl(cc.phone)&&comp().waGroup?'<button type="button" class="btn sec2" id="wag" style="margin-top:10px">Inviter au groupe WhatsApp</button>':''}
     <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="ns">Nouvelle vente</button><button class="btn line" id="ed">Modifier</button></div>
     ${ME.isAdmin?'<button type="button" class="btn danger" id="delc" style="margin-top:10px">Supprimer le client</button>':''}
@@ -2232,6 +2322,7 @@ function openClient(id){
     const ac=$('#addc',o.el);if(ac)ac.onclick=()=>addToContacts([cc]);
     $('#setgeo',o.el).onclick=()=>saveClientGeo(id,draw);
     if(cc.lat!=null)houseMap($('#hmap',o.el),cc);
+    const cb_=$('#cmp',o.el);if(cb_)cb_.onclick=()=>openCompass(cc);
     const dc=$('#delc',o.el);if(dc)dc.onclick=async()=>{if(await askDelClient(id))o.close()};
     const wg=$('#wag',o.el);if(wg)wg.onclick=()=>{const ph=phoneIntl(cc.phone),g=comp().waGroup;window.open('https://wa.me/'+ph+'?text='+encodeURIComponent('Bonjour '+cc.name+', rejoignez le groupe WhatsApp SenAfterPay pour recevoir nos nouveautés et rappels : '+g),'_blank')};
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
@@ -2249,7 +2340,7 @@ function openProductForm(id){
     <div><label for="pc">Prix à crédit (FCFA)</label><input id="pc" inputmode="numeric" value="${p&&p.creditPrice||''}" placeholder="Idem comptant"></div></div>
     <div class="grid2"><div><label for="pa">Prix d'achat (FCFA)</label><input id="pa" inputmode="numeric" value="${cost?cost.cost:''}"></div>
     <div><label for="pt">Seuil d'alerte</label><input id="pt" inputmode="numeric" value="${p?p.alert:2}"></div></div>
-    ${p?'':'<label for="pq">Quantité en stock au départ</label><input id="pq" inputmode="numeric" value="0">'}
+    ${p?`<label for="pq">Quantité restante en stock</label><input id="pq" inputmode="numeric" value="${stockOf(p.id)}"><p class="note" style="margin:4px 0 0">Changez ce nombre pour corriger le stock (ex. après un inventaire). La différence est notée dans les mouvements.</p>`:'<label for="pq">Quantité en stock au départ</label><input id="pq" inputmode="numeric" value="0">'}
     <p class="note" id="err"></p><div style="height:14px"></div><button class="btn" id="ok">Enregistrer</button>`,(el,o)=>{
     let img=p&&p.img||'';
     $('#ph',el).onchange=async e=>{const f=e.target.files&&e.target.files[0];if(!f)return;try{img=await readImage(f);const pv=$('#pv',el);pv.src=img;pv.style.display='block'}catch(x){$('#err',el).textContent='Photo illisible. Choisissez une autre image.'}};
@@ -2260,6 +2351,7 @@ function openProductForm(id){
       await put('products',nid,{name,ref:val(el,'pr').trim(),price,creditPrice:num(el,'pc')||price,alert:num(el,'pt'),img});
       await put('costs',nid,{cost:num(el,'pa')});
       if(!p&&num(el,'pq'))await put('moves',uid('m'),{productId:nid,qty:num(el,'pq'),type:'entrée',date:today(),note:'Stock initial',agent:ME.id});
+      if(p){const cur=stockOf(p.id),want=num(el,'pq'),diff=want-cur;if(diff!==0){await put('moves',uid('m'),{productId:nid,qty:diff,type:'correction',date:today(),note:'Correction du stock : '+cur+' → '+want,agent:ME.id});await logAct('Stock corrigé',name+' : '+cur+' → '+want)}}
       toast('Produit enregistré');o.close();
     };
   });
@@ -3051,7 +3143,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='04-11 · v26 vente rapide';
+const APP_VER='04-11 · v27 rappels';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -3386,6 +3478,20 @@ async function saveFile(name,html){
 }
 
 /* ========= Démarrage ========= */
+(function(){
+  let last=0,leaving=false;
+  try{history.replaceState({g:0},'');history.pushState({g:1},'')}catch(e){return}
+  addEventListener('popstate',()=>{
+    if(leaving)return;
+    const t=stack[stack.length-1];
+    if(t){t.close();history.pushState({g:1},'');return}
+    const ov=document.getElementById('imgx');if(ov){ov.click();history.pushState({g:1},'');return}
+    if(tab!=='home'){tab='home';query='';render();window.scrollTo(0,0);history.pushState({g:1},'');return}
+    const n=Date.now();
+    if(n-last<2500){leaving=true;history.back();setTimeout(()=>history.back(),60);return}
+    last=n;toast('Appuyez encore sur Retour pour quitter');history.pushState({g:1},'');
+  });
+})();
 $('#tabs').addEventListener('click',e=>{const b=e.target.closest('button[data-t]');if(!b)return;tab=b.dataset.t;query='';render();window.scrollTo(0,0)});
 init();
 })();
