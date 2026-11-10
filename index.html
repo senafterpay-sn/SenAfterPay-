@@ -2775,8 +2775,15 @@ function showImageOverlay(blob,name,msg){
   const old=document.getElementById('imgov');if(old)old.remove();
   const url=URL.createObjectURL(blob),d=document.createElement('div');d.id='imgov';
   d.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.88);display:flex;flex-direction:column;align-items:center;padding:14px;gap:10px;overflow:auto';
-  d.innerHTML='<p style="color:#fff;margin:0;font:600 15px system-ui;text-align:center;max-width:420px">'+esc(msg||'Appuyez longuement sur l\'image, puis « Télécharger l\'image » pour la garder dans la galerie.')+'</p><img alt="" style="max-width:100%;max-height:68vh;background:#fff;border-radius:8px" src="'+url+'"><div style="display:flex;gap:10px;width:100%;max-width:420px"><a download="'+esc(name)+'" href="'+url+'" style="flex:1;text-align:center;background:#14307f;color:#fff;padding:13px;border-radius:10px;font:700 15px system-ui;text-decoration:none">Télécharger l\'image</a><button type="button" id="imgx" style="flex:1;border:0;background:#fff;color:#14307f;padding:13px;border-radius:10px;font:700 15px system-ui">Fermer</button></div>';
-  document.body.appendChild(d);d.querySelector('#imgx').onclick=()=>{d.remove();URL.revokeObjectURL(url)};
+  d.innerHTML='<p style="color:#fff;margin:0;font:600 15px system-ui;text-align:center;max-width:420px">'+esc(msg||'Appuyez longuement sur l\'image, puis « Télécharger l\'image » pour la garder dans la galerie.')+'</p><img alt="" style="max-width:100%;max-height:68vh;background:#fff;border-radius:8px" src="'+url+'"><div style="display:flex;gap:10px;width:100%;max-width:420px"><button type="button" id="imgd" style="flex:1;border:0;background:#14307f;color:#fff;padding:13px;border-radius:10px;font:700 15px system-ui">Télécharger l\'image</button><button type="button" id="imgs" style="flex:1;border:0;background:#1a8f4a;color:#fff;padding:13px;border-radius:10px;font:700 15px system-ui">Partager / Enregistrer</button><button type="button" id="imgx" style="flex:1;border:0;background:#fff;color:#14307f;padding:13px;border-radius:10px;font:700 15px system-ui">Fermer</button></div>';
+  document.body.appendChild(d);d.querySelector('#imgx').onclick=()=>{d.remove();setTimeout(()=>URL.revokeObjectURL(url),60000)};
+  const file=new File([blob],name,{type:'image/png'});
+  d.querySelector('#imgd').onclick=()=>{
+    try{const a=document.createElement('a');a.href=url;a.download=name;a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>a.remove(),1500);
+      toast('Image téléchargée : cherchez-la dans la galerie (album Téléchargements) ou dans Fichiers > Téléchargements')}catch(e){toast('Appuyez longuement sur l\'image puis « Télécharger l\'image »')}};
+  d.querySelector('#imgs').onclick=async()=>{
+    try{if(navigator.share&&(!navigator.canShare||navigator.canShare({files:[file]}))){await navigator.share({files:[file],title:name});return}}catch(e){if(e&&e.name==='AbortError')return}
+    toast('Partage impossible ici : utilisez « Télécharger l\'image » ou appuyez longuement sur l\'image')};
 }
 /* Livre une image : WhatsApp direct dans la discussion du client (application Android),
    sinon partage du téléphone, sinon enregistrement dans la galerie, sinon image à garder à la main. */
@@ -3182,7 +3189,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='10-11 · v30 position';
+const APP_VER='10-11 · v31 position + image';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
