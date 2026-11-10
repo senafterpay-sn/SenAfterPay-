@@ -2164,15 +2164,19 @@ function getPos(goal){
   goal=goal||40;
   return new Promise((ok,ko)=>{
     if(!navigator.geolocation)return ko(new Error('Position non disponible sur ce téléphone'));
-    let best=null,done=false,wid=null,tm=null;
-    const fin=()=>{if(done)return;done=true;try{navigator.geolocation.clearWatch(wid)}catch(e){}clearTimeout(tm);
-      if(best)ok({lat:+best.latitude.toFixed(6),lng:+best.longitude.toFixed(6),acc:Math.round(best.accuracy||0)});else ko(new Error('Position introuvable : sortez à l\'air libre et réessayez'))};
-    wid=navigator.geolocation.watchPosition(p=>{
-      if(!best||p.coords.accuracy<best.accuracy)best=p.coords;
-      if(best.accuracy<=goal)fin();
-    },e=>{if(done)return;if(best)fin();else{done=true;clearTimeout(tm);try{navigator.geolocation.clearWatch(wid)}catch(x){}ko(new Error(e.code===1?'Position refusée : autorisez la localisation pour SenAfterPay':'Position introuvable : sortez à l\'air libre et réessayez'))}},
-      {enableHighAccuracy:true,timeout:25000,maximumAge:0});
-    tm=setTimeout(fin,20000);
+    let best=null,done=false,denied=false,ids=[],t1=null,t2=null,t3=null,n=0;
+    const stop=()=>{ids.forEach(i=>{try{navigator.geolocation.clearWatch(i)}catch(e){}});clearTimeout(t1);clearTimeout(t2);clearTimeout(t3)};
+    const fin=()=>{if(done)return;done=true;stop();
+      if(best)ok({lat:+best.latitude.toFixed(6),lng:+best.longitude.toFixed(6),acc:Math.round(best.accuracy||0)});
+      else ko(new Error(denied?'Position refusée : autorisez la localisation pour SenAfterPay (Paramètres du téléphone > Applications > SenAfterPay > Autorisations > Position)':'Position introuvable : activez la Localisation du téléphone (mode précis / GPS + Wi-Fi + données mobiles) puis réessayez'))};
+    const got=p=>{n++;if(!best||p.coords.accuracy<best.accuracy)best=p.coords;if(best.accuracy<=goal)fin()};
+    const bad=e=>{if(e&&e.code===1){denied=true;if(!best)fin()}};
+    const w=hi=>{try{ids.push(navigator.geolocation.watchPosition(got,bad,{enableHighAccuracy:hi,timeout:hi?30000:15000,maximumAge:hi?0:60000}))}catch(e){}};
+    w(true);w(false);
+    try{navigator.geolocation.getCurrentPosition(got,bad,{enableHighAccuracy:false,timeout:15000,maximumAge:120000})}catch(e){}
+    t1=setTimeout(()=>{if(best&&best.accuracy<=150)fin()},12000);
+    t2=setTimeout(()=>{if(best)fin()},22000);
+    t3=setTimeout(fin,38000);
   });
 }
 document.addEventListener('click',e=>{
@@ -3178,7 +3182,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='08-11 · v29 facture 1';
+const APP_VER='10-11 · v30 position';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
