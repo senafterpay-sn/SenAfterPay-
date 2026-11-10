@@ -2132,12 +2132,13 @@ function vMore(v){
     ${ME.isAdmin?item('down','Voix en wolof','Enregistrer les consignes de la vente guidée','voice'):''}
     ${ME.isAdmin?item('down','Exporter les données','Ventes, paiements, échéances, clients (Excel)','exp'):''}
     ${item('gear','WhatsApp utilisé','Business ou normal pour envoyer factures et rappels','wapick')}
+    ${item('gear','Tester l\'enregistrement d\'image','Vérifie si les images vont dans la galerie','imgtest')}
     ${item('gear','Mode simple (photos et voix)','Vente guidée pour les employés qui ne lisent pas','simple')}
     ${ME.isAdmin?item('down','Importer d\'anciennes factures','Temporaire : saisir les carnets papier d\'un agent','imp'):''}
     ${ME.isAdmin?item('team','Suivi des agents','Carte, trajets, pas, visites, alertes d\'immobilité','trkd'):item('team','Mon travail','Commencer ou terminer le travail, visites, pas','trkw')}
     ${ME.isAdmin?item('log','Journal des opérations','Annulations, changements de chef, stock','log'):''}
   </div>`;
-  v.querySelectorAll('[data-m]').forEach(r=>r.onclick=()=>({stock:()=>{tab='stock';render()},cash:()=>openCash(),staff:()=>openStaff(),comp:()=>openCompany(),exp:()=>openExports(),log:()=>openJournal(),simple:()=>openSimpleSettings(),wapick:()=>openWaPick(),access:()=>openAccess(),voice:()=>openVoices(),imp:()=>openImport(),trkd:()=>TRK.openTracking(),trkw:()=>TRK.openWork()})[r.dataset.m]());
+  v.querySelectorAll('[data-m]').forEach(r=>r.onclick=()=>({stock:()=>{tab='stock';render()},cash:()=>openCash(),staff:()=>openStaff(),comp:()=>openCompany(),exp:()=>openExports(),log:()=>openJournal(),simple:()=>openSimpleSettings(),wapick:()=>openWaPick(),imgtest:()=>openImgTest(),access:()=>openAccess(),voice:()=>openVoices(),imp:()=>openImport(),trkd:()=>TRK.openTracking(),trkw:()=>TRK.openWork()})[r.dataset.m]());
 }
 function bindSearch(v){const q=$('#q',v);if(!q)return;q.oninput=()=>{query=q.value;const pos=q.selectionStart;render();const n=$('#q');n.focus();n.setSelectionRange(pos,pos)}}
 function bindRows(v){
@@ -2788,6 +2789,23 @@ function showImageOverlay(blob,name,msg){
 /* Livre une image : WhatsApp direct dans la discussion du client (application Android),
    sinon partage du téléphone, sinon enregistrement dans la galerie, sinon image à garder à la main. */
 const waPkg=()=>{try{return localStorage.getItem('sap_wa_pkg')||''}catch(e){return''}};
+
+function openImgTest(){
+  const C=window.Capacitor,nat=!!(C&&C.isNativePlatform&&C.isNativePlatform());
+  const info='Application Android détectée : '+(nat?'OUI':'NON (vous êtes dans un navigateur ou une ancienne application)')+'<br>Module d\'enregistrement : '+(SAPN?'présent':'absent')+'<br>Version : '+APP_VER;
+  sheet('Test enregistrement d\'image',`<p class="note" style="margin-top:0">${info}</p><button class="btn" id="itgo">Enregistrer une image de test</button><p class="note" id="itr"></p>`,(el)=>{
+    $('#itgo',el).onclick=async()=>{
+      const r=$('#itr',el);r.textContent='Essai en cours…';
+      try{
+        const cv=document.createElement('canvas');cv.width=400;cv.height=200;const x=cv.getContext('2d');x.fillStyle='#14307f';x.fillRect(0,0,400,200);x.fillStyle='#fff';x.font='bold 32px sans-serif';x.fillText('SenAfterPay test',40,110);
+        const blob=await new Promise(ok=>cv.toBlob(ok,'image/png'));
+        if(!SAPN){r.textContent='ÉCHEC : l\'application Android n\'est pas détectée. Installez l\'APK construite sur GitHub.';return}
+        await SAPN.saveImage({data:await blobB64(blob),name:'test-senafterpay.png'});
+        r.textContent='RÉUSSI : ouvrez la Galerie, album « SenAfterPay » (image bleue).'
+      }catch(e){r.textContent='ÉCHEC : '+String((e&&e.message)||e)}
+    }
+  });
+}
 function openWaPick(){
   const cur=waPkg();
   sheet('WhatsApp utilisé',`<p class="note" style="margin-top:0">Choisissez l'application WhatsApp qui reçoit les factures et rappels sur ce téléphone (application Android).</p><div class="seg" id="wpk" style="flex-direction:column;gap:8px"><button data-v="" aria-pressed="${cur===''}">Automatique</button><button data-v="biz" aria-pressed="${cur==='biz'}">WhatsApp Business</button><button data-v="wa" aria-pressed="${cur==='wa'}">WhatsApp normal</button></div><p class="note">Si le client n'a pas WhatsApp, WhatsApp le dira : utilisez alors le bouton SMS.</p>`,(el,o)=>{el.querySelectorAll('#wpk button').forEach(b=>b.onclick=()=>{try{localStorage.setItem('sap_wa_pkg',b.dataset.v)}catch(e){}el.querySelectorAll('#wpk button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));toast('Enregistré')})});
@@ -2796,11 +2814,11 @@ async function deliverImage(blob,name,o){
   o=o||{};const ph=o.phone||'';
   if(SAPN){
     if(ph){try{const r=await SAPN.shareImage({data:await blobB64(blob),name,text:o.text||'',phone:ph,pkg:waPkg()});return r&&r.mode==='chat'?'chat':'whatsapp'}catch(e){}}
-    try{await SAPN.saveImage({data:await blobB64(blob),name});return'gallery'}catch(e){}
+    try{await SAPN.saveImage({data:await blobB64(blob),name});return'gallery'}catch(e){window.__imgErr='Enregistrement refusé : '+String((e&&e.message)||e)}
   }
   const file=new File([blob],name,{type:'image/png'});
   if(ph&&navigator.share){try{if(!navigator.canShare||navigator.canShare({files:[file]})){await navigator.share({files:[file],title:o.title||'',text:o.text||''});return'shared'}}catch(e){if(e&&e.name==='AbortError')return'cancel'}}
-  showImageOverlay(blob,name,ph?'Le partage direct n\'est pas possible ici. Enregistrez l\'image puis envoyez-la sur WhatsApp.':'');
+  showImageOverlay(blob,name,(window.__imgErr?window.__imgErr+' · ':'')+(SAPN?'':'Application Android non détectée · ')+(ph?'Le partage direct n\'est pas possible ici. Enregistrez l\'image puis envoyez-la sur WhatsApp.':''));
   return'overlay';
 }
 const deliverMsg={chat:'Image envoyée dans la discussion du client : touchez Envoyer dans WhatsApp',whatsapp:'WhatsApp ouvert : touchez Envoyer',shared:'Choisissez WhatsApp pour envoyer',gallery:'Image enregistrée dans la galerie (dossier SenAfterPay)',overlay:'',cancel:''};
@@ -3189,7 +3207,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='10-11 · v31 position + image';
+const APP_VER='10-11 · v32 test image';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
