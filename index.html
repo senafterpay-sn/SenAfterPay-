@@ -2764,7 +2764,17 @@ async function makePDF(el,name,html){
     toast('PDF indisponible, enregistrement du fichier…');saveFile(name.replace('.pdf','.html'),html);
   }
 }
-const SAPN=(()=>{try{const C=window.Capacitor;return C&&C.isNativePlatform&&C.isNativePlatform()?C.registerPlugin('SapShare'):null}catch(e){return null}})();
+let SAPN=null;
+function initSapn(){
+  if(SAPN)return SAPN;
+  try{const C=window.Capacitor;
+    if(C&&((C.isNativePlatform&&C.isNativePlatform())||(C.getPlatform&&C.getPlatform()!=='web')||/Android/i.test(navigator.userAgent)&&C.registerPlugin)){
+      SAPN=(C.Plugins&&C.Plugins.SapShare)||C.registerPlugin('SapShare')}
+  }catch(e){window.__sapErr=String((e&&e.message)||e)}
+  return SAPN;
+}
+initSapn();[300,1200,3000].forEach(t=>setTimeout(initSapn,t));
+document.addEventListener('click',initSapn,true);
 const blobB64=b=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]);r.onerror=rej;r.readAsDataURL(b)});
 async function invoiceImage(el){
   const LB=window.SAP_LIBS||{};await loadJS(LB.h2c||'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
@@ -2792,14 +2802,15 @@ const waPkg=()=>{try{return localStorage.getItem('sap_wa_pkg')||''}catch(e){retu
 
 function openImgTest(){
   const C=window.Capacitor,nat=!!(C&&C.isNativePlatform&&C.isNativePlatform());
-  const info='Application Android détectée : '+(nat?'OUI':'NON (vous êtes dans un navigateur ou une ancienne application)')+'<br>Module d\'enregistrement : '+(SAPN?'présent':'absent')+'<br>Version : '+APP_VER;
+  const info='Application Android détectée : '+(nat?'OUI':'NON (vous êtes dans un navigateur ou une ancienne application)')+'<br>Module d\'enregistrement : '+(initSapn()?'présent':'absent')+'<br>Version : '+APP_VER;
   sheet('Test enregistrement d\'image',`<p class="note" style="margin-top:0">${info}</p><button class="btn" id="itgo">Enregistrer une image de test</button><p class="note" id="itr"></p>`,(el)=>{
     $('#itgo',el).onclick=async()=>{
       const r=$('#itr',el);r.textContent='Essai en cours…';
       try{
         const cv=document.createElement('canvas');cv.width=400;cv.height=200;const x=cv.getContext('2d');x.fillStyle='#14307f';x.fillRect(0,0,400,200);x.fillStyle='#fff';x.font='bold 32px sans-serif';x.fillText('SenAfterPay test',40,110);
         const blob=await new Promise(ok=>cv.toBlob(ok,'image/png'));
-        if(!SAPN){r.textContent='ÉCHEC : l\'application Android n\'est pas détectée. Installez l\'APK construite sur GitHub.';return}
+        initSapn();
+        if(!SAPN){const C=window.Capacitor;r.textContent='ÉCHEC : module absent. Capacitor='+(C?'oui':'non')+' ; plateforme='+(C&&C.getPlatform?C.getPlatform():'?')+' ; erreur='+(window.__sapErr||'aucune');return}
         await SAPN.saveImage({data:await blobB64(blob),name:'test-senafterpay.png'});
         r.textContent='RÉUSSI : ouvrez la Galerie, album « SenAfterPay » (image bleue).'
       }catch(e){r.textContent='ÉCHEC : '+String((e&&e.message)||e)}
@@ -2812,6 +2823,7 @@ function openWaPick(){
 }
 async function deliverImage(blob,name,o){
   o=o||{};const ph=o.phone||'';
+  initSapn();
   if(SAPN){
     if(ph){try{const r=await SAPN.shareImage({data:await blobB64(blob),name,text:o.text||'',phone:ph,pkg:waPkg()});return r&&r.mode==='chat'?'chat':'whatsapp'}catch(e){}}
     try{await SAPN.saveImage({data:await blobB64(blob),name});return'gallery'}catch(e){window.__imgErr='Enregistrement refusé : '+String((e&&e.message)||e)}
@@ -3207,7 +3219,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='10-11 · v32 test image';
+const APP_VER='11-11 · v33 module image';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
