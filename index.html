@@ -1537,6 +1537,26 @@ async function askDelClient(id){
   if(n&&!confirm('Dernière confirmation : supprimer « '+c.name+' » et ses '+n+' vente(s) pour toujours ?'))return false;
   try{await delClientFull(id);toast('Client supprimé');return true}catch(e){toast('Suppression impossible');return false}
 }
+
+async function delSaleFull(id){
+  const x=byId(S.sales,id);if(!x)return;
+  const del=async(col,i)=>{if(DB){await DB.collection(col).doc(i).delete()}else{S[col]=S[col].filter(y=>y.id!==i);lsPut(col)}};
+  const pids=new Set(S.payments.filter(p=>p.saleId===id).map(p=>p.id));
+  for(const p of S.payments.filter(p=>p.saleId===id))await del('payments',p.id);
+  for(const k of S.cancels.filter(k=>k.saleId===id||pids.has(k.paymentId)))await del('cancels',k.id);
+  for(const m of S.moves.filter(m=>m.note&&(m.note===x.number||m.note===ref(x))&&(x.lines||[]).some(l=>l.productId===m.productId)))await del('moves',m.id);
+  for(const r of (S.reminders||[]).filter(r=>r.saleId===id||String(r.id).startsWith('cb_'+id+'_')||String(r.id).startsWith(id+'_')))await del('reminders',r.id);
+  if(DB&&x.fnum&&x.page){try{await DB.doc('slots/'+sh(ow(x))+'F'+x.fnum+'P'+x.page).delete()}catch(e){}}
+  await del('sales',id);
+  if(!DB)rerender();
+  await logAct('Vente supprimée',ref(x)+' · '+money(x.total));
+}
+async function askDelSale(id){
+  const x=byId(S.sales,id);if(!x)return false;
+  const np=S.payments.filter(p=>p.saleId===id&&p.status!=='annulé').length;
+  if(!confirm('Supprimer la vente '+ref(x)+' ('+money(x.total)+') ?\n\nLe stock est remis, la page '+ref(x)+' est libérée'+(np?', et '+np+' paiement(s) sont supprimés':'')+'. Action impossible à annuler.'))return false;
+  try{await delSaleFull(id);toast('Vente supprimée');return true}catch(e){toast('Suppression impossible');return false}
+}
 async function impWipe(n,own){
   const sales=S.sales.filter(x=>x.imported&&x.fnum===n&&ow(x)===own);
   const ids=new Set(sales.map(x=>x.id));
@@ -2691,8 +2711,10 @@ function openSale(id){
       <p class="note">Un paiement mobile est noté « à vérifier » : l'application ne le confirme pas auprès de l'opérateur.</p></div>`:''}
     <div class="sec"><h2>Paiements reçus</h2><span>${mine.length}</span></div>
     <div class="list">${mine.length?mine.map(p=>`<div class="row" data-pay="${p.id}"><div class="l"><b>${esc(p.number)}</b><small>${fdate(p.date)} · ${esc(p.method)}${p.ref?' · '+esc(p.ref):''} · ${esc(agentOf(p))}</small></div><div class="r"><b style="${p.status==='annulé'?'text-decoration:line-through;color:var(--mute)':''}">${money(p.amount)}</b>${p.status==='annulé'?'<span class="pill bad">Annulé</span>':p.method!=='Espèces'?'<span class="pill warn">À vérifier</span>':'<span class="pill ok">Reçu</span>'}</div></div>`).join(''):'<div class="empty">Aucun paiement.</div>'}</div>
-    <div style="height:12px"></div><button class="btn sec2" id="inv">Voir la facture</button>${ME.isAdmin&&!canc?'<button class="btn danger" id="cs" style="margin-top:10px">Annuler cette vente</button>':''}`);
+    <div style="height:12px"></div><button class="btn sec2" id="inv">Voir la facture</button>${c&&phoneIntl(c.phone)?'<button class="btn sec2" id="addc" style="margin-top:10px">Enregistrer le client dans les contacts</button>':''}${ME.isAdmin&&!canc?'<button class="btn danger" id="cs" style="margin-top:10px">Annuler cette vente</button>':''}${ME.isAdmin||s.agent===ME.id?'<button class="btn danger" id="ds" style="margin-top:10px">Supprimer la vente</button>':''}`);
     const csb=$('#cs',o.el);if(csb)csb.onclick=()=>openCancelSale(id);
+    const adc=$('#addc',o.el);if(adc)adc.onclick=()=>addToContacts([c]);
+    const dsb=$('#ds',o.el);if(dsb)dsb.onclick=async()=>{if(await askDelSale(id))o.close()};
     let lpi=-1;const lf=$('#lphf',o.el);
     o.el.querySelectorAll('[data-lph]').forEach(b=>b.onclick=()=>{lpi=+b.dataset.lph;lf.value='';lf.click()});
     lf.onchange=async()=>{const f=lf.files&&lf.files[0];if(!f||lpi<0)return;try{await setLineImg(id,lpi,await readImage(f,480))}catch(e){toast('Photo non enregistrée : '+String((e&&e.message)||e).slice(0,90))}};
@@ -3232,7 +3254,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='11-11 · v35 reçu image';
+const APP_VER='11-11 · v36 supprimer vente';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
