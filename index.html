@@ -2729,14 +2729,12 @@ function openPayment(pid){
   draw();
 }
 function invoiceText(s,c,st){
-  const ch=chiefInfo(s),co=comp();
-  let t='*FACTURE '+ref(s)+' — SenAfterPay*\nClient : '+(c?c.name:'')+'\nDate : '+fdate(s.date)+'\n';
-  t+=s.lines.map(l=>l.qty+' x '+l.name+' : '+money(l.price*l.qty)).join('\n')+'\n*Total : '+money(s.total)+'*\n';
-  if(s.type==='credit')t+='Paiement à crédit :\n'+s.schedule.map(e=>'- Tranche '+e.n+' : '+money(e.amount)+' le '+fdate(e.due)).join('\n')+'\n';
-  else t+='Paiement : comptant\n';
-  t+='Reste à payer : '+money(st.balance)+'\nChef de facture : '+[ch.prenom,ch.nom].filter(Boolean).join(' ')+(ch.tel?' ('+ch.tel+')':'')+'\nEmployé : '+sellerOf(s)+'\n';
-  if(co.phone)t+='Contact : '+co.phone+'\n';
-  return t+'Merci de votre confiance.';
+  const ch=chiefInfo(s);
+  let t='*Facture '+ref(s)+'* — SenAfterPay\nClient : '+(c?c.name:'')+'\n';
+  t+=s.lines.map(l=>l.qty+' x '+l.name).join(', ')+' = *'+money(s.total)+'*\n';
+  if(s.type==='credit'&&st.balance>0){const nx=(st.sched||[]).find(e=>e.balance>0);t+='Reste : '+money(st.balance)+(nx?' · prochain paiement '+money(nx.balance)+' le '+fdate(nx.due):'')+'\n'}
+  else t+=st.balance>0?'Reste : '+money(st.balance)+'\n':'Payé en totalité\n';
+  return t+'Contact : '+(ch.tel||comp().phone||'')+'. Merci !';
 }
 function loadJS(u){return new Promise((ok,ko)=>{if(document.querySelector('script[src="'+u+'"]'))return ok();const x=document.createElement('script');x.src=u;x.onload=ok;x.onerror=()=>ko(new Error('load'));document.head.appendChild(x)})}
 async function makePDF(el,name,html){
@@ -2895,11 +2893,21 @@ function openInvoice(sid){
     <label for="fc">Chef de facture</label><select id="fc"><option value="">Choisir…</option>${names.map(n=>`<option ${n===bk.chief?'selected':''}>${esc(n)}</option>`).join('')}</select>
     <label for="ft">Téléphone du chef (obligatoire)</label><input id="ft" inputmode="tel" value="${esc(chiefTelOf(s.fnum,ow(s)))}" placeholder="77 123 45 67">
     <p class="note" id="ferr" style="color:var(--bad)"></p><button class="btn" id="fs">Enregistrer et mettre à jour la facture</button></div>`:'';
-  const o=sheet('Facture '+ref(s),fix+'<div class="fxv"><div class="fxs">'+invoiceHTML(s,c,st)+'</div></div>'+`<div style="display:flex;gap:8px;margin-top:12px"><button class="btn" id="pi">Envoyer la facture</button></div><p class="note">« Envoyer la facture » crée une image de la facture. Si le client a un numéro, le téléphone ouvre le partage : choisissez WhatsApp. Sans numéro, l'image est enregistrée dans la galerie.</p>`,(el)=>{
+  const o=sheet('Facture '+ref(s),fix+'<div class="fxv"><div class="fxs">'+invoiceHTML(s,c,st)+'</div></div>'+`<div style="display:flex;gap:8px;margin-top:12px"><button class="btn" id="pi">Envoyer par WhatsApp</button></div><div style="display:flex;gap:8px;margin-top:8px"><button class="btn sec2" id="psms" style="flex:1">Par SMS</button><button class="btn sec2" id="pgal" style="flex:1">Enregistrer l'image</button></div><p class="note">Le client n'a pas WhatsApp ? Touchez « Par SMS » (message court) ou « Enregistrer l'image » (galerie) pour l'envoyer autrement.</p>`,(el)=>{
     const fxv=$('.fxv',el),fxs=$('.fxs',el);
     const fit=()=>{const k=Math.min(1,fxv.clientWidth/800);fxs.style.transform='scale('+k+')';fxv.style.height=Math.ceil(fxs.offsetHeight*k)+'px'};
     fit();setTimeout(fit,120);setTimeout(fit,500);window.addEventListener('resize',fit);
     $('#pi',el).onclick=()=>sendInvoiceImage(null,s,c,st);
+    $('#psms',el).onclick=()=>{const ph=phoneIntl(c&&c.phone);if(!ph){toast('Ce client n\'a pas de numéro');return}
+      const nx=(st.sched||[]).find(e=>e.balance>0);
+      const body='SenAfterPay · Facture '+ref(s)+' : '+money(s.total)+'.'+(st.balance>0?' Reste '+money(st.balance)+(nx?', prochain paiement '+money(nx.balance)+' le '+fdate(nx.due):''):' Payé en totalité.')+' Merci !';
+      location.href='sms:+'+ph+'?body='+encodeURIComponent(body)};
+    $('#pgal',el).onclick=async()=>{
+      try{toast('Création de l\'image…');
+        const tmp=document.createElement('div');tmp.style.cssText='position:fixed;left:-10000px;top:0;width:800px;background:#fff';tmp.innerHTML=invoiceHTML(s,c,st);document.body.appendChild(tmp);
+        let blob;try{blob=await invoiceImage(tmp.querySelector('.fx'))}finally{tmp.remove()}
+        const r=await deliverImage(blob,'facture-'+ref(s)+'.png',{});if(deliverMsg[r])toast(deliverMsg[r])
+      }catch(e){toast('Image impossible à créer sur ce téléphone')}};
     const fs=$('#fs',el);
     if(fs)fs.onclick=async()=>{const nm=val(el,'fc'),t=val(el,'ft').trim();
       if(!nm){$('#ferr',el).textContent='Choisissez le chef de facture.';return}
@@ -3219,7 +3227,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='11-11 · v33 module image';
+const APP_VER='11-11 · v34 facture';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -3508,7 +3516,7 @@ function chiefInfo(s){const nm=s.fnum&&(bookOf(s.fnum,ow(s))||{}).chief||'';cons
 function invoiceHTML(s,c,st){
   const co=comp(),f=n=>money(n).replace(' FCFA',''),ch=chiefInfo(s),cl=c||{};
   const row=(l,v)=>`<div class="fx-row"><b>${l} :</b><span>${esc(v||'')}</span></div>`;
-  const filler=Math.max(0,8-s.lines.length);
+  const filler=0;
   const ids=[[FXI.pin,'Adresse',co.address],[FXI.bld,'NINEA',co.ninea],[FXI.bld,'RCCM',co.rccm]].filter(x=>x[2]);
   const phones=[co.phone,co.whatsapp].filter(Boolean).join(' / ');
   const foot=[[FXI.tel,phones],[FXI.mail,co.email],[FXI.web,co.website]].filter(x=>x[1]);
