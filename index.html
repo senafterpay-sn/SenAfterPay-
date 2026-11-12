@@ -2879,7 +2879,7 @@ async function sendInvoiceImage(el,s,c,st){
 const loadImg=src=>new Promise(r=>{if(!src)return r(null);const i=new Image();i.onload=()=>r(i);i.onerror=()=>r(null);i.src=src});
 async function reminderImage(e){
   const s=e.sale,c=e.client,d=daysUntil(e.due,today()),late=d<0,W=800,P=40;
-  const prods=[];(s.lines||[]).forEach(l=>{const p=byId(S.products,l.productId||l.pid);prods.push({name:l.name,qty:l.qty,img:l.img||p&&p.img||''})});
+  const prods=[];(s.lines||[]).forEach(l=>{prods.push({name:l.name,qty:l.qty,img:lineImg(l)})});
   const shown=prods.slice(0,3),imgs=await Promise.all(shown.map(p=>loadImg(p.img)));
   const n=shown.length||1,box=n===1?420:n===2?330:220,gap=20,rowW=n*box+(n-1)*gap,top=170,nameH=88;
   const H=top+box+nameH+420,cv=document.createElement('canvas');cv.width=W;cv.height=H;const g=cv.getContext('2d');
@@ -3259,7 +3259,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='11-11 · v37 contacts';
+const APP_VER='12-11 · v38 photo rappel';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
