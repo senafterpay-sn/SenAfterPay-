@@ -1447,7 +1447,8 @@ function vBooks(v){
   let body='';
   if(bookView==='books'){
     const B=books().sort((a,b)=>b.num-a.num).filter(b=>!q||('f'+b.num).includes(q)||b.chief.toLowerCase().replace(/\s/g,'').includes(q)||ownerName(b.owner).toLowerCase().replace(/\s/g,'').includes(q)||ownerZone(b.owner).toLowerCase().replace(/\s/g,'').includes(q));
-    const rowB=b=>`<div class="row" data-book="${b.owner}|${b.num}"><div class="l"><b>Facture F${b.num}</b><small>Chef : ${esc(b.chief||'non défini')}</small><div class="bar" aria-hidden="true"><i style="width:${Math.round(b.used/PAGES*100)}%"></i></div></div><div class="r"><b>${b.used}/${PAGES}</b><span class="pill ${b.open?'':'warn'}">${b.open?'Ouverte':'Complète'}</span></div></div>`;
+    const lateB={};A.forEach(x=>{if(x.st.late>0&&x.s.fnum){const k=ow(x.s)+'|'+x.s.fnum;const t=lateB[k]=lateB[k]||{n:0,amt:0};t.n++;t.amt+=x.st.late}});
+    const rowB=b=>{const lt=lateB[b.owner+'|'+b.num];return `<div class="row" data-book="${b.owner}|${b.num}"><div class="l"><b>Facture F${b.num}</b><small>Chef : ${esc(b.chief||'non défini')}</small>${lt?`<small style="color:var(--bad);font-weight:700">${lt.n} client${lt.n>1?'s':''} en retard · ${money(lt.amt)}</small>`:''}<div class="bar" aria-hidden="true"><i style="width:${Math.round(b.used/PAGES*100)}%"></i></div></div><div class="r"><b>${b.used}/${PAGES}</b><span class="pill ${b.open?'':'warn'}">${b.open?'Ouverte':'Complète'}</span>${lt?'<span class="pill bad">Retard</span>':''}</div></div>`};
     if(!B.length)body='<div class="empty">Aucune facture. Le directeur en crée une pour chaque agent (bouton + Facture).</div>';
     else if(ME.isAdmin){const g={};B.forEach(b=>(g[b.owner]=g[b.owner]||[]).push(b));
       body=Object.keys(g).sort((x,y)=>ownerName(x).localeCompare(ownerName(y))).map(o=>`<div class="sec"><h2>${esc(ownerName(o))}${ownerZone(o)?' · '+esc(ownerZone(o)):''}</h2><span>${g[o].length} facture${g[o].length>1?'s':''}</span></div><div class="list">${g[o].map(rowB).join('')}</div>`).join('')}
@@ -1477,9 +1478,10 @@ function vClients(v){
   const owe=c=>S.sales.filter(s=>s.clientId===c.id&&!isCancelled(s)).reduce((a,s)=>a+saleState(s,P,now).balance,0);
   v.innerHTML=`<div class="sec"><h2>Clients</h2><span>${L.length}</span></div>
   <input class="search" id="q" type="search" placeholder="Nom ou téléphone" value="${esc(query)}">
-  <div class="list">${L.length?L.map(c=>{const o=owe(c);return `<div class="row" data-client="${c.id}"><div class="l"><b>${esc(c.name)}</b><small>${esc(c.phone||'Sans téléphone')}${c.address?' · '+esc(c.address):''}${c.nameVoice?' · 🎙 nom à écouter':''}</small></div><div class="r">${o>0?`<b>${money(o)}</b><small>dû</small>`:'<span class="pill ok">À jour</span>'}</div></div>`}).join(''):'<div class="empty">Aucun client. Ajoutez le premier avec le bouton ci-dessous.</div>'}</div>
+  <div class="list">${L.length?L.map(c=>{const o=owe(c);return `<div class="row" data-client="${c.id}"><div class="l"><b>${esc(c.name)}</b><small>${esc(c.phone||'Sans téléphone')}${c.address?' · '+esc(c.address):''}${c.nameVoice?' · 🎙 nom à écouter':''}</small></div><div class="r">${o>0?`<b>${money(o)}</b><small>dû</small>`:'<span class="pill ok">À jour</span>'}${ME.isAdmin?`<button type="button" class="btn danger" data-delc="${c.id}" style="padding:4px 10px;font-size:12px;margin-top:6px;width:auto">Supprimer</button>`:''}</div></div>`}).join(''):'<div class="empty">Aucun client. Ajoutez le premier avec le bouton ci-dessous.</div>'}</div>
   ${L.length?`<button type="button" class="btn line" id="allg" style="margin:12px 0 0">Inviter ces clients au groupe WhatsApp</button><button type="button" class="btn line" id="allc" style="margin:8px 0 70px">Enregistrer des clients dans les contacts (par groupe / facture)</button>`:''}
   <button class="btn fab" data-act="newclient">+ Client</button>`;
+  v.querySelectorAll('[data-delc]').forEach(b=>b.onclick=async e=>{e.stopPropagation();if(await askDelClient(b.dataset.delc))rerender()});
   const ab=v.querySelector('#allc');if(ab)ab.onclick=()=>openContactPicker(L);const ag=v.querySelector('#allg');if(ag)ag.onclick=()=>openGroupInvite(L);
   bindSearch(v);bindRows(v);
 }
@@ -1537,6 +1539,70 @@ async function askDelClient(id){
   try{await delClientFull(id);toast('Client supprimé');return true}catch(e){toast('Suppression impossible');return false}
 }
 
+
+function openEditSale(id){
+  const s0=byId(S.sales,id);if(!s0)return;
+  const w={date:s0.date||today(),type:s0.type==='credit'?'credit':'cash',lines:(s0.lines||[]).map(l=>({...l})),dep:s0.type==='credit'?(s0.deposit||0):0,sched:(s0.schedule||[]).map(e=>({due:e.due,amount:e.amount}))};
+  sheet('Modifier '+ref(s0),'<div id="eb"></div>',(el,o)=>{
+    const E=()=>$('#eb',el);
+    const total=()=>w.lines.reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0);
+    const pmine=()=>pays().filter(p=>p.saleId===id).sort((a,b)=>(a.time||a.date).localeCompare(b.time||b.date));
+    function sync(){ // lit les champs
+      w.date=($('#ed',el)||{}).value||w.date;
+      w.lines.forEach((l,i)=>{const q=$('#eq'+i,el),p=$('#ep'+i,el);if(q)l.qty=Math.max(1,Math.round(Number(q.value)||1));if(p)l.price=Math.max(0,Math.round(Number(String(p.value).replace(/\s/g,''))||0))});
+      const d=$('#edp',el);if(d)w.dep=Math.max(0,Math.round(Number(String(d.value).replace(/\s/g,''))||0));
+      w.sched.forEach((e,i)=>{const a=$('#ea'+i,el),dd=$('#ed'+i,el);if(a)e.amount=Math.max(0,Math.round(Number(String(a.value).replace(/\s/g,''))||0));if(dd)e.due=dd.value})
+    }
+    function draw(){
+      const t=total(),dep=w.type==='credit'?Math.min(w.dep,t):t,left=t-dep-w.sched.reduce((a,e)=>a+e.amount,0),mine=pmine();
+      E().innerHTML=`<p class="note" style="margin-top:0">Corrigez la vente. Le total, l'acompte et les tranches se recalculent. Les paiements déjà reçus restent comptés : supprimez en bas celui qui a été enregistré par erreur.</p>
+      <label for="ed">Date de la vente</label><input id="ed" type="date" value="${esc(w.date)}" max="${today()}">
+      <div class="sec"><h2>Produits</h2></div>
+      ${w.lines.map((l,i)=>`<div class="card" style="margin-bottom:8px"><b>${esc(l.name)}</b><div class="grid2"><div><label for="eq${i}">Quantité</label><input id="eq${i}" inputmode="numeric" value="${l.qty}"></div><div><label for="ep${i}">Prix unitaire</label><input id="ep${i}" inputmode="numeric" value="${l.price}"></div></div></div>`).join('')}
+      <div class="seg" id="ety" style="margin-top:10px"><button data-v="cash" aria-pressed="${w.type==='cash'}">Comptant (payé)</button><button data-v="credit" aria-pressed="${w.type==='credit'}">À crédit</button></div>
+      ${w.type==='credit'?`<label for="edp">Acompte (FCFA)</label><input id="edp" inputmode="numeric" value="${w.dep}">
+      <div class="sec"><h2>Tranches</h2><span>${w.sched.length}</span></div>
+      ${w.sched.map((e,i)=>`<div class="card" style="margin-bottom:8px"><div class="grid2"><div><label for="ed${i}">Date ${i+1}</label><input id="ed${i}" type="date" value="${esc(e.due||'')}"></div><div><label for="ea${i}">Montant</label><input id="ea${i}" inputmode="numeric" value="${e.amount}"></div></div><button type="button" class="btn line sm" data-rm="${i}" style="margin-top:6px">Retirer cette tranche</button></div>`).join('')}
+      <div style="display:flex;gap:8px"><button type="button" class="btn sec2 sm" id="eadd" style="flex:1">+ Tranche</button><button type="button" class="btn sec2 sm" id="eeq" style="flex:1">Répartir égal</button></div>`:''}
+      <div class="card" style="margin-top:12px"><div class="tot"><span>Total</span><b>${money(t)}</b></div>${w.type==='credit'?`<div class="tot"><span>Acompte</span><b>${money(dep)}</b></div><div class="tot"><span>Tranches</span><b>${money(w.sched.reduce((a,e)=>a+e.amount,0))}</b></div>${left!==0?`<p class="note" style="color:var(--bad)">${left>0?'Il reste '+money(left)+' à répartir sur les tranches.':'Les tranches dépassent de '+money(-left)+'.'}</p>`:''}`:'<p class="note">Vente payée comptant : le client doit avoir payé le total.</p>'}</div>
+      <p class="note" id="eerr" style="color:var(--bad)"></p><button class="btn" id="eok">Enregistrer les modifications</button>
+      <div class="sec"><h2>Paiements enregistrés</h2><span>${mine.length}</span></div>
+      <div class="list">${mine.length?mine.map(p=>`<div class="row"><div class="l"><b>${esc(p.number)} · ${p.kind==='comptant'?'Comptant':p.kind==='acompte'?'Acompte':'Versement'}</b><small>${fdate(p.date)} · ${esc(p.method)}${p.status==='annulé'?' · annulé':''}</small></div><div class="r"><b>${money(p.amount)}</b><button type="button" class="btn danger sm" data-dp="${p.id}" style="width:auto;margin-top:6px">Supprimer</button></div></div>`).join(''):'<div class="empty">Aucun paiement.</div>'}</div>
+      <p class="note">Si la vente a été enregistrée « payée » par erreur : choisissez « À crédit », réglez l'acompte et les tranches, puis supprimez le paiement enregistré par erreur.</p>`;
+      E().querySelectorAll('#ety button').forEach(b=>b.onclick=()=>{sync();w.type=b.dataset.v;if(w.type==='credit'&&!w.sched.length){const base=new Date();base.setDate(base.getDate()+30);w.sched=[{due:base.toISOString().slice(0,10),amount:Math.max(0,total()-w.dep)}]}draw()});
+      const add=$('#eadd',el);if(add)add.onclick=()=>{sync();const last=w.sched[w.sched.length-1],d=new Date((last&&last.due)||today());d.setMonth(d.getMonth()+1);w.sched.push({due:d.toISOString().slice(0,10),amount:0});draw()};
+      const eq=$('#eeq',el);if(eq)eq.onclick=()=>{sync();const n=w.sched.length;if(!n)return;const r=Math.max(0,total()-Math.min(w.dep,total())),b=Math.floor(r/n);w.sched.forEach((e,i)=>e.amount=i===n-1?r-b*(n-1):b);draw()};
+      E().querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{sync();w.sched.splice(+b.dataset.rm,1);draw()});
+      E().querySelectorAll('[data-dp]').forEach(b=>b.onclick=async()=>{const p=pmine().find(x=>x.id===b.dataset.dp);if(!p||!confirm('Supprimer le paiement '+p.number+' de '+money(p.amount)+' ? Il sera effacé pour toujours.'))return;sync();
+        try{for(const k of S.cancels.filter(k=>k.paymentId===p.id))await (DB?DB.collection('cancels').doc(k.id).delete():Promise.resolve(S.cancels=S.cancels.filter(y=>y.id!==k.id)));
+          if(DB)await DB.collection('payments').doc(p.id).delete();else{S.payments=S.payments.filter(y=>y.id!==p.id);lsPut('payments')}
+          await logAct('Paiement supprimé',p.number+' · '+ref(s0)+' · '+money(p.amount));toast('Paiement supprimé');draw()}catch(e){toast('Suppression impossible')}});
+      $('#eok',el).onclick=async()=>{
+        sync();const err=$('#eerr',el);err.textContent='';
+        const t=total();if(t<=0){err.textContent='Le total doit être supérieur à 0.';return}
+        if(w.lines.some(l=>!(l.price>0))){err.textContent='Chaque produit doit avoir un prix supérieur à 0.';return}
+        let dep=t,sch=[];
+        if(w.type==='credit'){
+          dep=Math.min(w.dep,t);sch=w.sched.map((e,i)=>({n:i+1,due:e.due,amount:e.amount}));
+          if(!sch.length){err.textContent='Le crédit doit avoir au moins une tranche.';return}
+          if(sch.some(e=>!e.due||e.amount<=0)){err.textContent='Chaque tranche doit avoir une date et un montant.';return}
+          if(sch.some((e,i)=>i&&e.due<sch[i-1].due)){err.textContent='Les dates des tranches doivent se suivre.';return}
+          if(dep+sch.reduce((a,e)=>a+e.amount,0)!==t){err.textContent='Acompte + tranches doivent être égaux au total ('+money(t)+').';return}
+        }
+        $('#eok',el).disabled=true;
+        try{
+          const lines=w.lines.map(l=>({...l,qty:l.qty,price:l.price}));
+          await put('sales',id,{...s0,date:w.date,lines,total:t,type:w.type,deposit:dep,months:sch.length,schedule:sch,edited:new Date().toISOString()});
+          for(let i=0;i<lines.length;i++){const d=(s0.lines[i]&&s0.lines[i].qty||0)-lines[i].qty;if(d&&lines[i].productId)await put('moves',uid('m'),{productId:lines[i].productId,qty:d,type:'correction',date:today(),note:s0.number,agent:ME.id})}
+          for(const p of pmine()){const k=w.type==='credit'?(p.kind==='comptant'?'acompte':p.kind):(p.kind==='acompte'?'comptant':p.kind);if(k!==p.kind){const{id:_i,status:_s,...rest}=p;await put('payments',p.id,{...rest,kind:k})}}
+          await logAct('Vente modifiée',ref(s0)+' · '+money(t)+(w.type==='credit'?' à crédit':' comptant'));
+          toast('Vente modifiée');o.close();rerender()
+        }catch(e){err.textContent='Enregistrement impossible : '+String((e&&e.message)||e).slice(0,90);$('#eok',el).disabled=false}
+      };
+    }
+    draw();
+  });
+}
 async function delSaleFull(id){
   const x=byId(S.sales,id);if(!x)return;
   const del=async(col,i)=>{if(DB){await DB.collection(col).doc(i).delete()}else{S[col]=S[col].filter(y=>y.id!==i);lsPut(col)}};
@@ -2073,14 +2139,25 @@ function drawMap(A,al,now){
   if(fitNext&&bounds.length){MAP.fitBounds(bounds,{padding:[30,30],maxZoom:17});fitNext=false}
   $('#tmapn',dirSheet.el).textContent=bounds.length?'Les photos montrent la dernière position reçue, jamais une position estimée. Les traits sont les trajets réellement enregistrés.':'Aucune position à afficher sur cette période.';
 }
+function stopMap(el,lat,lng,label){
+  if(!el)return;
+  if(!(window.loadLeaflet&&window.loadLeaflet())){el.innerHTML='<div class="note" style="padding:14px">Carte indisponible hors connexion. Utilisez « Ouvrir dans Google Maps ».</div>';return}
+  try{
+    const m=L.map(el,{zoomControl:true,attributionControl:false}).setView([lat,lng],17);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(m);
+    L.circleMarker([lat,lng],{radius:11,color:'#b4281f',fillColor:'#b4281f',fillOpacity:.85,weight:3}).addTo(m).bindPopup('<b>'+esc(label)+'</b>').openPopup();
+    S.clients.filter(c=>c.lat!=null&&c.lng!=null&&hav(c.lat,c.lng,lat,lng)<400).forEach(c=>{if(typeof houseLayer==='function')houseLayer(c,m).bindPopup('<b>🏠 '+esc(c.name)+'</b>')});
+    [150,500,1200].forEach(t=>setTimeout(()=>m.invalidateSize(),t));
+  }catch(e){el.innerHTML='<div class="note" style="padding:14px">Carte indisponible.</div>'}
+}
 function openAlert(id){
   const x=alertsList().find(a=>a.s.id===id);if(!x)return;const {r,s}=x,now=Date.now(),live=s.open&&now-s.end<OFFAFTER;
   const near=(r.visits||[]).filter(v=>v.lat!=null&&hav(v.lat,v.lng,s.lat,s.lng)<120);
   sheet('Alerte d\'immobilité',`<div style="display:flex;gap:12px;align-items:center">${avatar(r.uid,nameOf(r.uid),'#b4281f',56)}<div><b style="font-size:17px">${esc(nameOf(r.uid))}</b><div class="note" style="margin:0">immobile depuis ${dur(s.end-s.start)}</div></div></div>
     <div class="card" style="margin-top:12px"><p style="margin:0 0 6px"><b>Début de l'arrêt :</b> ${hm(s.start)}</p><p style="margin:0 0 6px"><b>Dernier relevé :</b> ${hm(s.end)} (${ago(now-s.end)})</p><p style="margin:0"><b>Situation :</b> ${live?'<span style="color:var(--bad)">immobilisation en cours</span>':s.open?'<span style="color:var(--warn)">ne peut plus être confirmée en direct (données anciennes ou hors connexion)</span>':'<span style="color:var(--ok)">terminée : l\'agent a repris son déplacement</span>'}</p></div>
     <div class="note" style="margin-top:10px">Contexte : ${near.length?'visite client enregistrée à proximité : '+near.map(v=>esc(v.name)+' ('+RES[v.res][0]+')').join(', '):'aucune visite client enregistrée à cet endroit. Il peut s\'agir d\'une pause ou d\'une autre activité : vérifiez avant de conclure.'}</div>
-    <a class="btn sec2" style="display:block;text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat=${s.lat}&mlon=${s.lng}#map=18/${s.lat}/${s.lng}">Voir le lieu sur la carte</a>
-    <a class="btn line" style="display:block;text-align:center;text-decoration:none;margin-top:8px" href="tel:${esc((PROF[r.uid]&&PROF[r.uid].phone)||'')}" hidden></a>`);
+    <div id="amap" style="height:260px;border-radius:12px;overflow:hidden;margin-top:10px;background:#e8ecf6"></div>
+    <a class="btn sec2" style="display:block;text-align:center;text-decoration:none;margin-top:10px" href="https://www.google.com/maps/search/?api=1&query=${s.lat},${s.lng}">Ouvrir dans Google Maps</a>`,(el)=>stopMap($('#amap',el),s.lat,s.lng,'Arrêt de '+nameOf(r.uid)));
 }
 function openAgent(u){
   const A=agg().find(a=>a.uid===u);if(!A)return;
@@ -2093,9 +2170,9 @@ function openAgent(u){
     <div class="kpi"><span>Durée de travail</span><b>${dur(A.work)}</b><small>${hm(A.first)}${r.end?' → '+hm(r.end):' → en cours'}</small></div>
     <div class="kpi"><span>Ventes / encaissé</span><b>${A.nSales}</b><small>${money(A.enc)}</small></div></div>
     <p class="note">Visites : ${A.visits.length} · Synchronisation : ${r.hb?'dernier envoi '+ago(now-r.hb):'aucun'} · Téléphone : ${r.dev==='android'?'application Android':'navigateur'}</p>
-    ${l?`<a class="btn sec2" style="display:block;text-align:center;text-decoration:none" target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat=${l[1]}&mlon=${l[2]}#map=17/${l[1]}/${l[2]}">Voir la dernière position</a>`:''}
+    ${l?`<div id="lmap" style="height:240px;border-radius:12px;overflow:hidden;background:#e8ecf6"></div><a class="btn sec2" style="display:block;text-align:center;text-decoration:none;margin-top:8px" href="https://www.google.com/maps/search/?api=1&query=${l[1]},${l[2]}">Ouvrir dans Google Maps</a>`:''}
     <div class="sec"><h2>Dernières activités</h2></div><div class="list">${acts.map(a=>`<div class="row"><div class="l"><b>${a.h}</b><small>${fdate(new Date(a.t).toISOString())} ${hm(a.t)}</small></div></div>`).join('')||'<p class="note">Aucune activité.</p>'}</div>
-    <div style="height:10px"></div><button class="btn line" id="aph">Changer la photo de cet agent</button>`,(el,o)=>{$('#aph',el).onclick=()=>pickPhoto(u,()=>{dirUpdate()})});
+    <div style="height:10px"></div><button class="btn line" id="aph">Changer la photo de cet agent</button>`,(el,o)=>{$('#aph',el).onclick=()=>pickPhoto(u,()=>{dirUpdate()});if(l)stopMap($('#lmap',el),l[1],l[2],nameOf(u)+' · dernière position')});
 }
 function openCfg(){
   const c=cfg();
@@ -2376,7 +2453,7 @@ function openClient(id){
     ${cc.lat!=null?'<button type="button" class="btn sec2" id="cmp" style="margin-top:10px">🧭 Guide à pied (flèche et distance, sans route)</button>':''}
     ${phoneIntl(cc.phone)&&comp().waGroup?'<button type="button" class="btn sec2" id="wag" style="margin-top:10px">Inviter au groupe WhatsApp</button>':''}
     <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="ns">Nouvelle vente</button><button class="btn line" id="ed">Modifier</button></div>
-    ${phoneIntl(cc.phone)?'<button type="button" class="btn sec2" id="addc2" style="margin-top:10px">Enregistrer le client dans les contacts</button>':''}
+    ${phoneIntl(cc.phone)?'<button type="button" class="btn sec2" id="addc2" style="margin-top:10px">Enregistrer le client dans les contacts</button>':''}${ME.isAdmin?'<button type="button" class="btn danger" id="delc" style="margin-top:10px">Supprimer le client</button>':''}
     <div class="sec"><h2>Historique</h2><span>${L.length}</span></div>
     <div class="list">${L.length?L.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>${esc(ref(x.s))}</b><small>${fdate(x.s.date)} · ${trLabel(x.s)} · ${esc(sellerOf(x.s))}</small></div><div class="r"><b>${money(x.s.total)}</b><span class="pill ${stPill(x.st.status)}">${x.st.status}</span></div></div>`).join(''):'<div class="empty">Aucun achat.</div>'}</div>`);
     $('#ns',o.el).onclick=()=>openNewSale(id);$('#ed',o.el).onclick=()=>openClientForm(id);
@@ -2389,6 +2466,7 @@ function openClient(id){
       try{await put('clients',id,{...cur,notes:[...(cur.notes||[]),{id:uid('n'),t:new Date().toISOString(),by:ME.name||'',uid:ME.id||'',txt:t}]});toast('Note enregistrée')}catch(e){toast('Enregistrement impossible')}};
     o.el.querySelectorAll('[data-ntdel]').forEach(b=>b.onclick=async()=>{if(!confirm('Supprimer cette note ?'))return;const cur=byId(S.clients,id)||cc;try{await put('clients',id,{...cur,notes:(cur.notes||[]).filter(n=>n.id!==b.dataset.ntdel)})}catch(e){toast('Suppression impossible')}});
     const ac2=$('#addc2',o.el);if(ac2)ac2.onclick=()=>addToContacts([cc]);
+    const dc=$('#delc',o.el);if(dc)dc.onclick=async()=>{if(await askDelClient(id))o.close()};
     const wg=$('#wag',o.el);if(wg)wg.onclick=()=>{const ph=phoneIntl(cc.phone),g=comp().waGroup;window.open('https://wa.me/'+ph+'?text='+encodeURIComponent('Bonjour '+cc.name+', rejoignez le groupe WhatsApp SenAfterPay pour recevoir nos nouveautés et rappels : '+g),'_blank')};
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
   }
@@ -2499,6 +2577,7 @@ function openBook(n,o_){
       <p class="note">${free.length?'Pages libres : '+ranges.map(r=>r[0]===r[1]?'P'+r[0]:'P'+r[0]+' à P'+r[1]).join(', '):'Facture complète.'}</p>
       ${ME.isAdmin&&names.length?`<label for="bc">Changer le chef</label><div style="display:flex;gap:8px"><select id="bc">${names.map(x=>`<option ${x===b.chief?'selected':''}>${esc(x)}</option>`).join('')}</select><button class="btn sm" id="sc2" style="flex:none">Enregistrer</button></div>`:''}</div>
     ${ME.isAdmin&&b.used===0?'<button type="button" class="btn danger" id="dbk" style="margin-bottom:10px">Supprimer cette facture vide</button>':''}
+    ${(()=>{const L=rows.filter(x=>x.st.late>0);return L.length?`<div class="sec"><h2 style="color:var(--bad)">En retard</h2><span>${L.length} · ${money(L.reduce((a,x)=>a+x.st.late,0))}</span></div><div class="list">${L.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>P${x.s.page} · ${esc(x.c?x.c.name:'Client')}</b><small>${esc(x.c&&x.c.phone?phoneShow(x.c.phone):'Sans téléphone')}</small></div><div class="r"><b style="color:var(--bad)">${money(x.st.late)}</b><span class="pill bad">en retard</span></div></div>`).join('')}</div>`:''})()}
     <div class="sec"><h2>Clients et pages</h2><span>${rows.length}</span></div>
     <div class="list">${rows.length?rows.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>P${x.s.page} · ${esc(x.c?x.c.name:'Client')}</b><small>${fdate(x.s.date)} · ${esc(trLabel(x.s))} · ${esc(sellerOf(x.s))}</small></div><div class="r"><b>${money(x.s.total)}</b><span class="pill ${stPill(x.st.status)}">${x.st.status}</span></div></div>`).join(''):'<div class="empty">Aucune page utilisée.</div>'}</div>`);
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
@@ -2716,7 +2795,8 @@ function openSale(id){
       <p class="note">Un paiement mobile est noté « à vérifier » : l'application ne le confirme pas auprès de l'opérateur.</p></div>`:''}
     <div class="sec"><h2>Paiements reçus</h2><span>${mine.length}</span></div>
     <div class="list">${mine.length?mine.map(p=>`<div class="row" data-pay="${p.id}"><div class="l"><b>${esc(p.number)}</b><small>${fdate(p.date)} · ${esc(p.method)}${p.ref?' · '+esc(p.ref):''} · ${esc(agentOf(p))}</small></div><div class="r"><b style="${p.status==='annulé'?'text-decoration:line-through;color:var(--mute)':''}">${money(p.amount)}</b>${p.status==='annulé'?'<span class="pill bad">Annulé</span>':p.method!=='Espèces'?'<span class="pill warn">À vérifier</span>':'<span class="pill ok">Reçu</span>'}</div></div>`).join(''):'<div class="empty">Aucun paiement.</div>'}</div>
-    <div style="height:12px"></div><button class="btn sec2" id="inv">Voir la facture</button>${c&&phoneIntl(c.phone)?'<button class="btn sec2" id="addc" style="margin-top:10px">Enregistrer le client dans les contacts</button>':''}${ME.isAdmin&&!canc?'<button class="btn danger" id="cs" style="margin-top:10px">Annuler cette vente</button>':''}${ME.isAdmin||s.agent===ME.id?'<button class="btn danger" id="ds" style="margin-top:10px">Supprimer la vente</button>':''}`);
+    <div style="height:12px"></div><button class="btn sec2" id="inv">Voir la facture</button>${c&&phoneIntl(c.phone)?'<button class="btn sec2" id="addc" style="margin-top:10px">Enregistrer le client dans les contacts</button>':''}${ME.isAdmin&&!canc?'<button class="btn danger" id="cs" style="margin-top:10px">Annuler cette vente</button>':''}${ME.isAdmin||s.agent===ME.id?'<button class="btn" id="es" style="margin-top:10px">Modifier la vente</button>':''}${ME.isAdmin||s.agent===ME.id?'<button class="btn danger" id="ds" style="margin-top:10px">Supprimer la vente</button>':''}`);
+    const esb=$('#es',o.el);if(esb)esb.onclick=()=>openEditSale(id);
     const csb=$('#cs',o.el);if(csb)csb.onclick=()=>openCancelSale(id);
     const adc=$('#addc',o.el);if(adc)adc.onclick=()=>addToContacts([c]);
     const dsb=$('#ds',o.el);if(dsb)dsb.onclick=async()=>{if(await askDelSale(id))o.close()};
@@ -3259,7 +3339,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='12-11 · v38 photo rappel';
+const APP_VER='12-11 · v39 modifier vente';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
