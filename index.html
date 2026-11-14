@@ -2246,7 +2246,6 @@ function vMore(v){
     ${ME.isAdmin?item('down','Voix en wolof','Enregistrer les consignes de la vente guidée','voice'):''}
     ${ME.isAdmin?item('down','Exporter les données','Ventes, paiements, échéances, clients (Excel)','exp'):''}
     ${item('gear','WhatsApp utilisé','Business ou normal pour envoyer factures et rappels','wapick')}
-    ${item('gear','Tester l\'enregistrement d\'image','Vérifie si les images vont dans la galerie','imgtest')}
     ${item('gear','Mode simple (photos et voix)','Vente guidée pour les employés qui ne lisent pas','simple')}
     ${ME.isAdmin?item('gear','Rappels SMS automatiques','SMS envoyés seuls 5 jours avant chaque paiement','asms'):''}
     ${ME.isAdmin?item('down','Importer d\'anciennes factures','Temporaire : saisir les carnets papier d\'un agent','imp'):''}
@@ -2597,16 +2596,11 @@ function openBook(n,o_){
       <p class="note">${free.length?'Pages libres : '+ranges.map(r=>r[0]===r[1]?'P'+r[0]:'P'+r[0]+' à P'+r[1]).join(', '):'Facture complète.'}</p>
       ${ME.isAdmin&&names.length?`<label for="bc">Changer le chef</label><div style="display:flex;gap:8px"><select id="bc">${names.map(x=>`<option ${x===b.chief?'selected':''}>${esc(x)}</option>`).join('')}</select><button class="btn sm" id="sc2" style="flex:none">Enregistrer</button></div>`:''}</div>
     ${ME.isAdmin&&b.used===0?'<button type="button" class="btn danger" id="dbk" style="margin-bottom:10px">Supprimer cette facture vide</button>':''}
-    ${ME.isAdmin&&b.used>0?'<button type="button" class="btn danger" id="dbf" style="margin-bottom:10px">Supprimer toute la facture F'+n+' ('+rows.length+' vente'+(rows.length>1?'s':'')+')</button>':''}
     ${(()=>{const L=rows.filter(x=>x.st.late>0);return L.length?`<div class="sec"><h2 style="color:var(--bad)">En retard</h2><span>${L.length} · ${money(L.reduce((a,x)=>a+x.st.late,0))}</span></div><div class="list">${L.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>P${x.s.page} · ${esc(x.c?x.c.name:'Client')}</b><small>${esc(x.c&&x.c.phone?phoneShow(x.c.phone):'Sans téléphone')}</small></div><div class="r"><b style="color:var(--bad)">${money(x.st.late)}</b><span class="pill bad">en retard</span></div></div>`).join('')}</div>`:''})()}
     <div class="sec"><h2>Clients et pages</h2><span>${rows.length}</span></div>
     <div class="list">${rows.length?rows.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>P${x.s.page} · ${esc(x.c?x.c.name:'Client')}</b><small>${fdate(x.s.date)} · ${esc(trLabel(x.s))} · ${esc(sellerOf(x.s))}</small></div><div class="r"><b>${money(x.s.total)}</b><span class="pill ${stPill(x.st.status)}">${x.st.status}</span></div></div>`).join(''):'<div class="empty">Aucune page utilisée.</div>'}</div>`);
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
     const dbk=$('#dbk',o.el);if(dbk)dbk.onclick=async()=>{if(!confirm('Supprimer la facture F'+n+' (vide) ?'))return;try{await deleteBook(n,o_);toast('Facture supprimée');o.close()}catch(e){toast('Suppression impossible')}};
-    const dbf=$('#dbf',o.el);if(dbf)dbf.onclick=async()=>{
-      if(!confirm('Supprimer TOUTE la facture F'+n+' ('+ownerName(o_)+') avec ses '+rows.length+' vente(s), paiements et clients importés ?\n\nAction impossible à annuler.'))return;
-      if(!confirm('Dernière confirmation : effacer définitivement F'+n+' de '+ownerName(o_)+' ?'))return;
-      dbf.disabled=true;try{const k=await deleteBookFull(n,o_);toast(k+' vente(s) supprimée(s) : facture F'+n+' effacée');o.close()}catch(e){toast('Suppression incomplète : réessayez');dbf.disabled=false}};
     const st2=$('#st2',o.el);if(st2)st2.onclick=async()=>{const t=val(o.el,'bt').trim();if(!okTel(t)){toast('Numéro obligatoire (9 chiffres)');return}await put('invoices',bkey(o_,n),{...(bookOf(n,o_)||{num:n,owner:o_,created:today()}),chiefTel:t});toast('Téléphone enregistré')};
     const sc=$('#sc2',o.el);if(sc)sc.onclick=async()=>{const nm=val(o.el,'bc'),x=S.staff.find(q=>q.name===nm);const cur=bookOf(n,o_)||{num:n,owner:o_,created:today()};const typed=val(o.el,'bt').trim(),tel=(x&&x.phone)||(typed!==chiefTelOf(n,o_)?typed:'');if(!okTel(tel)){toast('Saisissez le téléphone du nouveau chef puis réessayez');return}await put('invoices',bkey(o_,n),{...cur,chief:nm,chiefTel:tel});await logAct('Chef de facture changé','F'+n+' : '+(b.chief||'—')+' → '+val(o.el,'bc'));toast('Chef enregistré')};
   }
@@ -3461,7 +3455,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='14-11 · v45 suppression facture';
+const APP_VER='14-11 · v46 retour corrigé';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -3797,23 +3791,28 @@ async function saveFile(name,html){
 
 /* ========= Démarrage ========= */
 (function(){
-  let last=0,leaving=false;
-  const guard=()=>{try{if(!history.state||history.state.g!==1)history.pushState({g:1},'')}catch(e){}};
-  try{history.replaceState({g:0},'')}catch(e){return}
-  guard();
-  const onBack=()=>{
+  /* Bouton Retour : ferme d'abord la fenêtre ouverte, puis revient à l'accueil, puis demande une 2e pression pour quitter.
+     Le code natif (MainActivity) appelle window.__sapBack ; dans un navigateur on utilise l'historique avec une réserve d'entrées. */
+  let last=0;const MAXD=6;
+  const lvl=()=>{try{return(history.state&&history.state.g)||0}catch(e){return 0}};
+  const fill=()=>{try{let g=lvl();while(g<MAXD){g++;history.pushState({g},'')}}catch(e){}};
+  try{history.replaceState({g:0},'')}catch(e){}
+  const handled=()=>{
     const t=stack[stack.length-1];
-    if(t){t.close();guard();return}
-    const ov=document.getElementById('imgx')||document.getElementById('cbring');if(ov){ov.click();guard();return}
-    if(tab!=='home'){tab='home';query='';render();window.scrollTo(0,0);guard();return}
+    if(t){t.close();return true}
+    const ov=document.getElementById('imgx')||document.getElementById('cbring');if(ov){ov.click();return true}
+    if(tab!=='home'){tab='home';query='';render();window.scrollTo(0,0);return true}
     const n=Date.now();
-    if(n-last<2500){leaving=true;history.back();setTimeout(()=>history.back(),60);return}
-    last=n;toast('Appuyez encore sur Retour pour quitter');guard();
+    if(n-last<2500)return false;
+    last=n;toast('Appuyez encore sur Retour pour quitter');return true;
   };
-  addEventListener('popstate',()=>{if(leaving)return;onBack()});
-  document.addEventListener('backbutton',e=>{if(leaving)return;e.preventDefault&&e.preventDefault();onBack()},false);
-  ['pointerdown','touchstart','click'].forEach(ev=>document.addEventListener(ev,guard,true));
-  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')guard()});
+  window.__sapBack=handled;
+  addEventListener('popstate',()=>{
+    if(handled())return;
+    try{const g=lvl();if(g>0)history.go(-g)}catch(e){}
+  });
+  document.addEventListener('backbutton',e=>{e.preventDefault&&e.preventDefault();handled()},false);
+  ['click','touchend'].forEach(ev=>document.addEventListener(ev,fill,true));
 })();
 $('#tabs').addEventListener('click',e=>{const b=e.target.closest('button[data-t]');if(!b)return;tab=b.dataset.t;query='';render();window.scrollTo(0,0)});
 init();
