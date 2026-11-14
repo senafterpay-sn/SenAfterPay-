@@ -1105,6 +1105,21 @@ async function deleteBook(n,owner){
   if(S.sales.some(s=>s.fnum===n&&ow(s)===(owner||'')&&!isCancelled(s)))return false;
   if(d)await delDoc('invoices',d.id);return true;
 }
+/* Suppression complète d'un carnet (dirigeant) : toutes ses ventes, paiements, annulations, pages réservées et sa fiche */
+async function deleteBookFull(n,owner){
+  owner=owner||'';
+  const del=async(c,id)=>{if(DB){await DB.collection(c).doc(id).delete()}else{S[c]=S[c].filter(x=>x.id!==id);lsPut(c)}};
+  const L=S.sales.filter(s=>s.fnum===n&&ow(s)===owner);
+  const cl=new Set(L.map(s=>s.clientId));
+  for(const s of L)await delSaleFull(s.id);
+  for(const x of S.slots.filter(x=>x.fnum===n&&ow(x)===owner))await del('slots',x.id).catch(()=>{});
+  const still=new Set(S.sales.map(s=>s.clientId));
+  for(const c of S.clients.filter(c=>c.imported&&cl.has(c.id)&&!still.has(c.id)))await del('clients',c.id);
+  const d=S.invoices.find(b=>b.num===n&&ow(b)===owner);if(d)await delDoc('invoices',d.id);
+  if(!DB)rerender();
+  await logAct('Facture supprimée','F'+n+' · '+L.length+' vente(s) · '+ownerName(owner));
+  return L.length;
+}
 function books(o){
   const keys=new Map();
   S.invoices.forEach(b=>keys.set(ow(b)+'|'+b.num,{num:b.num,owner:ow(b)}));
@@ -2582,11 +2597,16 @@ function openBook(n,o_){
       <p class="note">${free.length?'Pages libres : '+ranges.map(r=>r[0]===r[1]?'P'+r[0]:'P'+r[0]+' à P'+r[1]).join(', '):'Facture complète.'}</p>
       ${ME.isAdmin&&names.length?`<label for="bc">Changer le chef</label><div style="display:flex;gap:8px"><select id="bc">${names.map(x=>`<option ${x===b.chief?'selected':''}>${esc(x)}</option>`).join('')}</select><button class="btn sm" id="sc2" style="flex:none">Enregistrer</button></div>`:''}</div>
     ${ME.isAdmin&&b.used===0?'<button type="button" class="btn danger" id="dbk" style="margin-bottom:10px">Supprimer cette facture vide</button>':''}
+    ${ME.isAdmin&&b.used>0?'<button type="button" class="btn danger" id="dbf" style="margin-bottom:10px">Supprimer toute la facture F'+n+' ('+rows.length+' vente'+(rows.length>1?'s':'')+')</button>':''}
     ${(()=>{const L=rows.filter(x=>x.st.late>0);return L.length?`<div class="sec"><h2 style="color:var(--bad)">En retard</h2><span>${L.length} · ${money(L.reduce((a,x)=>a+x.st.late,0))}</span></div><div class="list">${L.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>P${x.s.page} · ${esc(x.c?x.c.name:'Client')}</b><small>${esc(x.c&&x.c.phone?phoneShow(x.c.phone):'Sans téléphone')}</small></div><div class="r"><b style="color:var(--bad)">${money(x.st.late)}</b><span class="pill bad">en retard</span></div></div>`).join('')}</div>`:''})()}
     <div class="sec"><h2>Clients et pages</h2><span>${rows.length}</span></div>
     <div class="list">${rows.length?rows.map(x=>`<div class="row" data-sale="${x.s.id}"><div class="l"><b>P${x.s.page} · ${esc(x.c?x.c.name:'Client')}</b><small>${fdate(x.s.date)} · ${esc(trLabel(x.s))} · ${esc(sellerOf(x.s))}</small></div><div class="r"><b>${money(x.s.total)}</b><span class="pill ${stPill(x.st.status)}">${x.st.status}</span></div></div>`).join(''):'<div class="empty">Aucune page utilisée.</div>'}</div>`);
     o.el.querySelectorAll('[data-sale]').forEach(r=>r.onclick=()=>openSale(r.dataset.sale));
     const dbk=$('#dbk',o.el);if(dbk)dbk.onclick=async()=>{if(!confirm('Supprimer la facture F'+n+' (vide) ?'))return;try{await deleteBook(n,o_);toast('Facture supprimée');o.close()}catch(e){toast('Suppression impossible')}};
+    const dbf=$('#dbf',o.el);if(dbf)dbf.onclick=async()=>{
+      if(!confirm('Supprimer TOUTE la facture F'+n+' ('+ownerName(o_)+') avec ses '+rows.length+' vente(s), paiements et clients importés ?\n\nAction impossible à annuler.'))return;
+      if(!confirm('Dernière confirmation : effacer définitivement F'+n+' de '+ownerName(o_)+' ?'))return;
+      dbf.disabled=true;try{const k=await deleteBookFull(n,o_);toast(k+' vente(s) supprimée(s) : facture F'+n+' effacée');o.close()}catch(e){toast('Suppression incomplète : réessayez');dbf.disabled=false}};
     const st2=$('#st2',o.el);if(st2)st2.onclick=async()=>{const t=val(o.el,'bt').trim();if(!okTel(t)){toast('Numéro obligatoire (9 chiffres)');return}await put('invoices',bkey(o_,n),{...(bookOf(n,o_)||{num:n,owner:o_,created:today()}),chiefTel:t});toast('Téléphone enregistré')};
     const sc=$('#sc2',o.el);if(sc)sc.onclick=async()=>{const nm=val(o.el,'bc'),x=S.staff.find(q=>q.name===nm);const cur=bookOf(n,o_)||{num:n,owner:o_,created:today()};const typed=val(o.el,'bt').trim(),tel=(x&&x.phone)||(typed!==chiefTelOf(n,o_)?typed:'');if(!okTel(tel)){toast('Saisissez le téléphone du nouveau chef puis réessayez');return}await put('invoices',bkey(o_,n),{...cur,chief:nm,chiefTel:tel});await logAct('Chef de facture changé','F'+n+' : '+(b.chief||'—')+' → '+val(o.el,'bc'));toast('Chef enregistré')};
   }
@@ -3441,7 +3461,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='14-11 · v44 facture 1 et 3';
+const APP_VER='14-11 · v45 suppression facture';
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
