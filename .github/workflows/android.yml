@@ -73,7 +73,7 @@ jobs:
           import re, shutil, pathlib
           root = pathlib.Path(__file__).parent / 'android' / 'app' / 'src' / 'main'
           java = root / 'java' / 'sn' / 'senafterpay' / 'app'
-          for f in ('StepCounterPlugin.java', 'SapSharePlugin.java', 'MainActivity.java'):
+          for f in ('StepCounterPlugin.java', 'SapSharePlugin.java', 'SmsAuto.java', 'MainActivity.java'):
               shutil.copy(pathlib.Path(__file__).parent / 'native' / f, java / f)
           mf = root / 'AndroidManifest.xml'
           t = mf.read_text(encoding='utf-8')
@@ -86,6 +86,9 @@ jobs:
               <uses-permission android:name="android.permission.RECORD_AUDIO" />
               <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
               <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+              <uses-permission android:name="android.permission.SEND_SMS" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+              <uses-feature android:name="android.hardware.telephony" android:required="false" />
               <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
               <queries>
                   <package android:name="com.whatsapp" />
@@ -95,6 +98,14 @@ jobs:
           '''
           if 'ACTIVITY_RECOGNITION' not in t:
               t = t.replace('</manifest>', extra + '</manifest>')
+          if 'SmsAuto' not in t:
+              t = t.replace('</application>', '''    <receiver android:name=".SmsAuto" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                          <action android:name="sn.senafterpay.app.SMS_RUN" />
+                      </intent-filter>
+                  </receiver>
+              </application>''')
           mf.write_text(t, encoding='utf-8')
 
           # --- icône et écran de démarrage : logo SenAfterPay ---
@@ -294,7 +305,10 @@ jobs:
            */
           @CapacitorPlugin(
               name = "SapShare",
-              permissions = { @Permission(alias = "mic", strings = { Manifest.permission.RECORD_AUDIO }) }
+              permissions = {
+                  @Permission(alias = "mic", strings = { Manifest.permission.RECORD_AUDIO }),
+                  @Permission(alias = "sms", strings = { Manifest.permission.SEND_SMS })
+              }
           )
           public class SapSharePlugin extends Plugin {
 
@@ -625,6 +639,215 @@ jobs:
                       }
                   });
                   call.resolve();
+              }
+
+              @PluginMethod
+              public void smsPermission(PluginCall call) {
+                  if (SmsAuto.granted(getContext())) {
+                      JSObject r = new JSObject();
+                      r.put("granted", true);
+                      call.resolve(r);
+                  } else {
+                      requestPermissionForAlias("sms", call, "smsDone");
+                  }
+              }
+
+              @PermissionCallback
+              private void smsDone(PluginCall call) {
+                  JSObject r = new JSObject();
+                  r.put("granted", SmsAuto.granted(getContext()));
+                  call.resolve(r);
+              }
+
+              @PluginMethod
+              public void smsConfigure(PluginCall call) {
+                  try {
+                      android.content.SharedPreferences.Editor e = SmsAuto.prefs(getContext()).edit();
+                      e.putBoolean("on", call.getBoolean("on", false));
+                      e.putInt("hour", call.getInt("hour", 8));
+                      if (call.getData().has("items")) e.putString("queue", call.getData().getJSONArray("items").toString());
+                      e.apply();
+                      SmsAuto.schedule(getContext());
+                      call.resolve(smsInfo());
+                  } catch (Exception ex) {
+                      call.reject("Programmation impossible : " + ex.getMessage());
+                  }
+              }
+
+              private JSObject smsInfo() {
+                  JSObject r = new JSObject();
+                  android.content.SharedPreferences p = SmsAuto.prefs(getContext());
+                  r.put("on", p.getBoolean("on", false));
+                  r.put("hour", p.getInt("hour", 8));
+                  r.put("granted", SmsAuto.granted(getContext()));
+                  try {
+                      r.put("queued", new org.json.JSONArray(p.getString("queue", "[]")).length());
+                      r.put("sent", new JSObject(p.getString("sent", "{}")));
+                  } catch (Exception ignore) {
+                      r.put("queued", 0);
+                  }
+                  return r;
+              }
+
+              @PluginMethod
+              public void smsStatus(PluginCall call) {
+                  call.resolve(smsInfo());
+              }
+
+              @PluginMethod
+              public void smsRunNow(final PluginCall call) {
+                  new Thread(new Runnable() {
+                      @Override
+                      public void run() {
+                          int n = SmsAuto.sendDue(getContext(), true);
+                          JSObject r = smsInfo();
+                          r.put("count", n);
+                          call.resolve(r);
+                      }
+                  }).start();
+              }
+          }
+          SAP_EOF
+          cat > native/SmsAuto.java <<'SAP_EOF'
+          package sn.senafterpay.app;
+
+          import android.Manifest;
+          import android.app.AlarmManager;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.PackageManager;
+          import android.os.Build;
+          import android.telephony.SmsManager;
+
+          import androidx.core.app.NotificationCompat;
+          import androidx.core.app.NotificationManagerCompat;
+          import androidx.core.content.ContextCompat;
+
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+
+          import java.text.SimpleDateFormat;
+          import java.util.ArrayList;
+          import java.util.Calendar;
+          import java.util.Date;
+          import java.util.Iterator;
+          import java.util.Locale;
+
+          /**
+           * Rappels SMS automatiques : l'application dépose une file (clé, date d'envoi, numéro, texte).
+           * Chaque jour à l'heure choisie, ce récepteur envoie les SMS du jour (et ceux des 2 jours précédents
+           * si le téléphone était éteint), puis se reprogramme. Il se reprogramme aussi au redémarrage.
+           */
+          public class SmsAuto extends BroadcastReceiver {
+              static final String PREFS = "sap_sms";
+              static final String ACT = "sn.senafterpay.app.SMS_RUN";
+
+              @Override
+              public void onReceive(final Context c, Intent i) {
+                  final PendingResult pr = goAsync();
+                  new Thread(new Runnable() {
+                      @Override
+                      public void run() {
+                          try {
+                              sendDue(c, false);
+                              schedule(c);
+                          } catch (Exception ignore) {
+                          } finally {
+                              pr.finish();
+                          }
+                      }
+                  }).start();
+              }
+
+              static SharedPreferences prefs(Context c) {
+                  return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+              }
+
+              static boolean granted(Context c) {
+                  return ContextCompat.checkSelfPermission(c, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED;
+              }
+
+              static void schedule(Context c) {
+                  AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+                  PendingIntent pi = PendingIntent.getBroadcast(c, 5151, new Intent(c, SmsAuto.class).setAction(ACT),
+                          PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                  SharedPreferences p = prefs(c);
+                  if (!p.getBoolean("on", false)) {
+                      am.cancel(pi);
+                      return;
+                  }
+                  Calendar cal = Calendar.getInstance();
+                  cal.set(Calendar.HOUR_OF_DAY, p.getInt("hour", 8));
+                  cal.set(Calendar.MINUTE, 0);
+                  cal.set(Calendar.SECOND, 0);
+                  cal.set(Calendar.MILLISECOND, 0);
+                  if (cal.getTimeInMillis() <= System.currentTimeMillis() + 60000L) cal.add(Calendar.DAY_OF_MONTH, 1);
+                  if (Build.VERSION.SDK_INT >= 23) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, cal.getTimeInMillis(), pi);
+                  else am.set(AlarmManager.RTC_WAKEUP, cal.getTimeInMillis(), pi);
+              }
+
+              /** Envoie les SMS dus. force=true : sans attendre l'heure choisie. Retourne le nombre envoyé. */
+              static int sendDue(Context c, boolean force) {
+                  SharedPreferences p = prefs(c);
+                  if (!p.getBoolean("on", false) || !granted(c)) return 0;
+                  Calendar now = Calendar.getInstance();
+                  if (!force && now.get(Calendar.HOUR_OF_DAY) < p.getInt("hour", 8)) return 0;
+                  SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+                  String today = f.format(now.getTime());
+                  Calendar mn = Calendar.getInstance();
+                  mn.add(Calendar.DAY_OF_MONTH, -2);
+                  String min = f.format(mn.getTime());
+                  int ok = 0, bad = 0;
+                  try {
+                      JSONArray q = new JSONArray(p.getString("queue", "[]"));
+                      JSONObject sent = new JSONObject(p.getString("sent", "{}"));
+                      SmsManager sm = Build.VERSION.SDK_INT >= 31 ? c.getSystemService(SmsManager.class) : SmsManager.getDefault();
+                      for (int k = 0; k < q.length(); k++) {
+                          JSONObject it = q.getJSONObject(k);
+                          String key = it.getString("key"), d = it.getString("date");
+                          if (sent.has(key) || d.compareTo(today) > 0 || d.compareTo(min) < 0) continue;
+                          try {
+                              ArrayList<String> parts = sm.divideMessage(it.getString("text"));
+                              sm.sendMultipartTextMessage(it.getString("phone"), null, parts, null, null);
+                              sent.put(key, System.currentTimeMillis());
+                              ok++;
+                              try { Thread.sleep(1500); } catch (Exception ignore) { }
+                          } catch (Exception e) {
+                              bad++;
+                          }
+                      }
+                      long cut = System.currentTimeMillis() - 90L * 86400000L;
+                      Iterator<String> ks = sent.keys();
+                      ArrayList<String> old = new ArrayList<String>();
+                      while (ks.hasNext()) { String kk = ks.next(); if (sent.optLong(kk) < cut) old.add(kk); }
+                      for (String kk : old) sent.remove(kk);
+                      p.edit().putString("sent", sent.toString()).apply();
+                  } catch (Exception e) {
+                      bad++;
+                  }
+                  if (ok + bad > 0) notifyDone(c, ok, bad);
+                  return ok;
+              }
+
+              static void notifyDone(Context c, int ok, int bad) {
+                  try {
+                      NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+                      if (Build.VERSION.SDK_INT >= 26) {
+                          nm.createNotificationChannel(new NotificationChannel("sap_sms", "Rappels SMS", NotificationManager.IMPORTANCE_DEFAULT));
+                      }
+                      Intent open = c.getPackageManager().getLaunchIntentForPackage(c.getPackageName());
+                      PendingIntent pi = PendingIntent.getActivity(c, 1, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                      String body = ok + " SMS de rappel envoyé(s)" + (bad > 0 ? ", " + bad + " en échec" : "");
+                      NotificationCompat.Builder b = new NotificationCompat.Builder(c, "sap_sms")
+                              .setSmallIcon(c.getApplicationInfo().icon).setContentTitle("SenAfterPay").setContentText(body)
+                              .setAutoCancel(true).setContentIntent(pi);
+                      if (NotificationManagerCompat.from(c).areNotificationsEnabled()) nm.notify(7788, b.build());
+                  } catch (Exception ignore) { }
               }
           }
           SAP_EOF
