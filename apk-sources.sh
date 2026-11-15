@@ -1,0 +1,843 @@
+#!/usr/bin/env bash
+# Ecrit le projet Android (appele par android.yml).
+set -e
+mkdir -p android-app/www android-app/native
+cd android-app
+cat > package.json <<'SAP_EOF'
+{
+  "name": "senafterpay-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Coque Android de SenAfterPay (suivi GPS en arriere-plan et pas)",
+  "dependencies": {
+    "@capacitor/android": "6.2.1",
+    "@capacitor/cli": "6.2.1",
+    "@capacitor/core": "6.2.1",
+    "@capacitor-community/background-geolocation": "1.2.26"
+  }
+}
+SAP_EOF
+cat > capacitor.config.json <<'SAP_EOF'
+{
+  "appId": "sn.senafterpay.app",
+  "appName": "SenAfterPay",
+  "webDir": "www",
+  "server": {
+    "url": "__SITE__",
+    "androidScheme": "https",
+    "allowNavigation": ["senafterpay-sn.github.io", "*.supabase.co"]
+  },
+  "android": { "allowMixedContent": false }
+}
+SAP_EOF
+cat > www/index.html <<'SAP_EOF'
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SenAfterPay</title><body style="font-family:sans-serif;text-align:center;padding:40px">Chargement de SenAfterPay...<br><small>Connexion Internet requise au premier lancement.</small></body>
+SAP_EOF
+cat > setup.sh <<'SAP_EOF'
+#!/usr/bin/env bash
+# Prepare le projet Android : a lancer dans le dossier android-app (npm install deja fait).
+set -e
+[ -d android ] || npx cap add android
+python3 -m pip install --quiet pillow
+python3 patch.py
+npx cap sync android
+SAP_EOF
+cat > patch.py <<'SAP_EOF'
+"""Ajoute au projet Android genere par Capacitor : permissions, capteur de pas, partage WhatsApp, MainActivity."""
+import re, shutil, pathlib
+root = pathlib.Path(__file__).parent / 'android' / 'app' / 'src' / 'main'
+java = root / 'java' / 'sn' / 'senafterpay' / 'app'
+for f in ('StepCounterPlugin.java', 'SapSharePlugin.java', 'SmsAuto.java', 'MainActivity.java'):
+    shutil.copy(pathlib.Path(__file__).parent / 'native' / f, java / f)
+mf = root / 'AndroidManifest.xml'
+t = mf.read_text(encoding='utf-8')
+extra = '''
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <queries>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+        <intent><action android:name="android.speech.RecognitionService" /></intent>
+    </queries>
+'''
+if 'ACTIVITY_RECOGNITION' not in t:
+    t = t.replace('</manifest>', extra + '</manifest>')
+if 'SmsAuto' not in t:
+    t = t.replace('</application>', '''    <receiver android:name=".SmsAuto" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="sn.senafterpay.app.SMS_RUN" />
+            </intent-filter>
+        </receiver>
+    </application>''')
+mf.write_text(t, encoding='utf-8')
+
+# --- icone et ecran de demarrage : logo SenAfterPay ---
+from PIL import Image, ImageDraw
+res = root / 'res'
+logo = Image.open(pathlib.Path(__file__).parent / 'native' / 'logo.png').convert('RGB')
+for d, sc in {'mdpi': 1, 'hdpi': 1.5, 'xhdpi': 2, 'xxhdpi': 3, 'xxxhdpi': 4}.items():
+    out = res / ('mipmap-' + d)
+    L, F = round(48 * sc), round(108 * sc)
+    fg = Image.new('RGBA', (F, F), (255, 255, 255, 255))
+    lg = logo.resize((round(84 * sc),) * 2, Image.LANCZOS)
+    fg.paste(lg, ((F - lg.width) // 2,) * 2)
+    fg.save(out / 'ic_launcher_foreground.png')
+    sq = logo.resize((L, L), Image.LANCZOS).convert('RGBA')
+    sq.save(out / 'ic_launcher.png')
+    mask = Image.new('L', (L * 4, L * 4), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, L * 4 - 1, L * 4 - 1), fill=255)
+    rd = sq.copy()
+    rd.putalpha(mask.resize((L, L), Image.LANCZOS))
+    rd.save(out / 'ic_launcher_round.png')
+for sp in res.rglob('splash.png'):
+    w, h = Image.open(sp).size
+    img = Image.new('RGB', (w, h), (255, 255, 255))
+    k = round(min(w, h) * 0.45)
+    lg = logo.resize((k, k), Image.LANCZOS)
+    img.paste(lg, ((w - k) // 2, (h - k) // 2))
+    img.save(sp)
+print('patch OK')
+SAP_EOF
+cat > native/StepCounterPlugin.java <<'SAP_EOF'
+package sn.senafterpay.app;
+
+import android.Manifest;
+import android.content.Context;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.os.Build;
+
+import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
+
+@CapacitorPlugin(
+    name = "StepCounter",
+    permissions = { @Permission(alias = "activity", strings = { Manifest.permission.ACTIVITY_RECOGNITION }) }
+)
+public class StepCounterPlugin extends Plugin implements SensorEventListener {
+    private SensorManager manager;
+    private Sensor sensor;
+    private boolean running = false;
+    private float base = -1f;
+    private float current = 0f;
+    private float offset = 0f;
+
+    private Sensor findSensor() {
+        if (sensor == null) {
+            manager = (SensorManager) getContext().getSystemService(Context.SENSOR_SERVICE);
+            if (manager != null) sensor = manager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
+        }
+        return sensor;
+    }
+
+    @PluginMethod
+    public void isAvailable(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("available", findSensor() != null);
+        call.resolve(r);
+    }
+
+    @PluginMethod
+    public void requestPermission(PluginCall call) {
+        if (Build.VERSION.SDK_INT < 29 || getPermissionState("activity") == PermissionState.GRANTED) {
+            JSObject r = new JSObject();
+            r.put("granted", true);
+            call.resolve(r);
+        } else {
+            requestPermissionForAlias("activity", call, "permissionResult");
+        }
+    }
+
+    @PermissionCallback
+    private void permissionResult(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("granted", getPermissionState("activity") == PermissionState.GRANTED);
+        call.resolve(r);
+    }
+
+    @PluginMethod
+    public void start(PluginCall call) {
+        if (findSensor() == null) {
+            call.reject("Capteur de pas indisponible");
+            return;
+        }
+        if (!running) {
+            base = -1f;
+            current = 0f;
+            offset = 0f;
+            running = manager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL);
+        }
+        JSObject r = new JSObject();
+        r.put("running", running);
+        call.resolve(r);
+    }
+
+    @PluginMethod
+    public void stop(PluginCall call) {
+        if (running && manager != null) manager.unregisterListener(this);
+        running = false;
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void getSteps(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("steps", Math.round(offset + current));
+        r.put("running", running);
+        call.resolve(r);
+    }
+
+    @Override
+    public void onSensorChanged(SensorEvent event) {
+        float v = event.values[0];
+        if (base < 0f) base = v;
+        if (v < base) { // le telephone a redemarre : le compteur est reparti de zero
+            offset += current;
+            base = v;
+        }
+        current = v - base;
+    }
+
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+}
+SAP_EOF
+cat > native/SapSharePlugin.java <<'SAP_EOF'
+package sn.senafterpay.app;
+
+import android.Manifest;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.ContentResolver;
+import android.content.ContentValues;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.media.MediaScannerConnection;
+import android.net.Uri;
+import android.provider.ContactsContract;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
+import java.util.ArrayList;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
+import android.util.Base64;
+
+import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.FileProvider;
+
+import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+
+@CapacitorPlugin(
+    name = "SapShare",
+    permissions = {
+        @Permission(alias = "mic", strings = { Manifest.permission.RECORD_AUDIO }),
+        @Permission(alias = "sms", strings = { Manifest.permission.SEND_SMS })
+    }
+)
+public class SapSharePlugin extends Plugin {
+
+    private static final String CHANNEL = "sap_alertes";
+
+    private byte[] decode(String b64) {
+        if (b64 == null) b64 = "";
+        int i = b64.indexOf(',');
+        if (i >= 0) b64 = b64.substring(i + 1);
+        return Base64.decode(b64, Base64.DEFAULT);
+    }
+
+    private String safe(String n) {
+        if (n == null || n.isEmpty()) n = "image.png";
+        return n.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    @PluginMethod
+    public void saveImage(PluginCall call) {
+        try {
+            String name = safe(call.getString("name", "facture.png"));
+            byte[] data = decode(call.getString("data", ""));
+            Context ctx = getContext();
+            if (Build.VERSION.SDK_INT >= 29) {
+                ContentResolver cr = ctx.getContentResolver();
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
+                v.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+                v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/SenAfterPay");
+                v.put(MediaStore.Images.Media.IS_PENDING, 1);
+                Uri uri = cr.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                if (uri == null) throw new Exception("insertion impossible");
+                try (OutputStream os = cr.openOutputStream(uri)) {
+                    os.write(data);
+                }
+                v.clear();
+                v.put(MediaStore.Images.Media.IS_PENDING, 0);
+                cr.update(uri, v, null, null);
+            } else {
+                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "SenAfterPay");
+                dir.mkdirs();
+                File f = new File(dir, name);
+                try (FileOutputStream os = new FileOutputStream(f)) {
+                    os.write(data);
+                }
+                MediaScannerConnection.scanFile(ctx, new String[]{f.getAbsolutePath()}, new String[]{"image/png"}, null);
+            }
+            JSObject r = new JSObject();
+            r.put("saved", true);
+            call.resolve(r);
+        } catch (Exception e) {
+            call.reject("Enregistrement impossible : " + e.getMessage());
+        }
+    }
+
+    private boolean installed(String pkg) {
+        try {
+            getContext().getPackageManager().getPackageInfo(pkg, 0);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @PluginMethod
+    public void shareImage(PluginCall call) {
+        try {
+            String name = safe(call.getString("name", "facture.png"));
+            byte[] data = decode(call.getString("data", ""));
+            String text = call.getString("text", "");
+            String phone = call.getString("phone", "").replaceAll("\\D", "");
+            Context ctx = getContext();
+            File dir = new File(ctx.getCacheDir(), "partage");
+            dir.mkdirs();
+            File f = new File(dir, name);
+            try (FileOutputStream os = new FileOutputStream(f)) {
+                os.write(data);
+            }
+            Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", f);
+            Intent i = new Intent(Intent.ACTION_SEND);
+            i.setType("image/png");
+            i.putExtra(Intent.EXTRA_STREAM, uri);
+            if (text != null && !text.isEmpty()) i.putExtra(Intent.EXTRA_TEXT, text);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            String want = call.getString("pkg", "");
+            String wa = "com.whatsapp", biz = "com.whatsapp.w4b";
+            String pkg;
+            if ("biz".equals(want)) pkg = installed(biz) ? biz : (installed(wa) ? wa : null);
+            else pkg = installed(wa) ? wa : (installed(biz) ? biz : null);
+            String mode;
+            if (pkg != null) {
+                if (!phone.isEmpty()) i.putExtra("jid", phone + "@s.whatsapp.net");
+                i.setPackage(pkg);
+                ctx.grantUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                getActivity().startActivity(i);
+                mode = phone.isEmpty() ? "whatsapp" : "chat";
+            } else {
+                Intent ch = Intent.createChooser(i, "Envoyer la facture");
+                getActivity().startActivity(ch);
+                mode = "chooser";
+            }
+            JSObject r = new JSObject();
+            r.put("mode", mode);
+            call.resolve(r);
+        } catch (Exception e) {
+            call.reject("Partage impossible : " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void addAlarm(PluginCall call) {
+        try {
+            Intent i = new Intent(android.provider.AlarmClock.ACTION_SET_ALARM);
+            i.putExtra(android.provider.AlarmClock.EXTRA_HOUR, call.getInt("hour", 0));
+            i.putExtra(android.provider.AlarmClock.EXTRA_MINUTES, call.getInt("minutes", 0));
+            i.putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, call.getString("msg", "Rappel SenAfterPay"));
+            i.putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true);
+            getActivity().startActivity(i);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Alarme indisponible : " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void addEvent(PluginCall call) {
+        try {
+            long b = Long.parseLong(call.getString("begin", "0"));
+            Intent i = new Intent(Intent.ACTION_INSERT);
+            i.setData(android.provider.CalendarContract.Events.CONTENT_URI);
+            i.putExtra(android.provider.CalendarContract.Events.TITLE, call.getString("title", ""));
+            i.putExtra(android.provider.CalendarContract.Events.DESCRIPTION, call.getString("desc", ""));
+            i.putExtra(android.provider.CalendarContract.EXTRA_EVENT_BEGIN_TIME, b);
+            i.putExtra(android.provider.CalendarContract.EXTRA_EVENT_END_TIME, b + 15 * 60 * 1000L);
+            getActivity().startActivity(i);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Calendrier indisponible : " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void notifyPermission(PluginCall call) {
+        try {
+            if (Build.VERSION.SDK_INT >= 33
+                    && ActivityCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(getActivity(), new String[]{Manifest.permission.POST_NOTIFICATIONS}, 7001);
+            }
+            JSObject r = new JSObject();
+            r.put("enabled", NotificationManagerCompat.from(getContext()).areNotificationsEnabled());
+            call.resolve(r);
+        } catch (Exception e) {
+            call.reject(e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void notifyEnabled(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("enabled", NotificationManagerCompat.from(getContext()).areNotificationsEnabled());
+        call.resolve(r);
+    }
+
+    @PluginMethod
+    public void notify(PluginCall call) {
+        try {
+            Context ctx = getContext();
+            String title = call.getString("title", "SenAfterPay");
+            String body = call.getString("body", "");
+            NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (Build.VERSION.SDK_INT >= 26) {
+                NotificationChannel c = new NotificationChannel(CHANNEL, "Alertes de suivi", NotificationManager.IMPORTANCE_HIGH);
+                c.enableVibration(true);
+                nm.createNotificationChannel(c);
+            }
+            Intent open = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
+            PendingIntent pi = PendingIntent.getActivity(ctx, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL)
+                    .setSmallIcon(ctx.getApplicationInfo().icon)
+                    .setContentTitle(title)
+                    .setContentText(body)
+                    .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setDefaults(NotificationCompat.DEFAULT_ALL)
+                    .setAutoCancel(true)
+                    .setContentIntent(pi);
+            if (NotificationManagerCompat.from(ctx).areNotificationsEnabled()) {
+                nm.notify((int) (System.currentTimeMillis() % 100000), b.build());
+            }
+            call.resolve();
+        } catch (Exception e) {
+            call.reject(e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void addContact(PluginCall call) {
+        try {
+            Intent i = new Intent(ContactsContract.Intents.Insert.ACTION);
+            i.setType(ContactsContract.RawContacts.CONTENT_TYPE);
+            i.putExtra(ContactsContract.Intents.Insert.NAME, call.getString("name", ""));
+            i.putExtra(ContactsContract.Intents.Insert.PHONE, call.getString("phone", ""));
+            i.putExtra(ContactsContract.Intents.Insert.PHONE_TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE);
+            i.putExtra(ContactsContract.Intents.Insert.COMPANY, call.getString("company", ""));
+            i.putExtra(ContactsContract.Intents.Insert.NOTES, call.getString("note", ""));
+            getActivity().startActivity(i);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Contact impossible : " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void openVcf(PluginCall call) {
+        try {
+            Context ctx = getContext();
+            File dir = new File(ctx.getCacheDir(), "partage");
+            dir.mkdirs();
+            File f = new File(dir, safe(call.getString("name", "clients.vcf")));
+            try (FileOutputStream os = new FileOutputStream(f)) {
+                os.write(call.getString("text", "").getBytes("UTF-8"));
+            }
+            Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", f);
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(uri, "text/x-vcard");
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            getActivity().startActivity(Intent.createChooser(i, "Ajouter les clients aux contacts"));
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Fichier contacts impossible : " + e.getMessage());
+        }
+    }
+
+    private SpeechRecognizer sr;
+
+    @PluginMethod
+    public void requestMic(PluginCall call) {
+        if (getPermissionState("mic") == PermissionState.GRANTED) {
+            JSObject r = new JSObject();
+            r.put("granted", true);
+            call.resolve(r);
+        } else {
+            requestPermissionForAlias("mic", call, "micDone");
+        }
+    }
+
+    @PermissionCallback
+    private void micDone(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("granted", getPermissionState("mic") == PermissionState.GRANTED);
+        call.resolve(r);
+    }
+
+    @PluginMethod
+    public void listen(PluginCall call) {
+        if (getPermissionState("mic") != PermissionState.GRANTED) {
+            requestPermissionForAlias("mic", call, "listenPerm");
+            return;
+        }
+        startListen(call);
+    }
+
+    @PermissionCallback
+    private void listenPerm(PluginCall call) {
+        if (getPermissionState("mic") == PermissionState.GRANTED) startListen(call);
+        else call.reject("not-allowed");
+    }
+
+    private void startListen(final PluginCall call) {
+        final Context ctx = getContext();
+        getActivity().runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
+                        call.reject("absent");
+                        return;
+                    }
+                    if (sr != null) {
+                        try { sr.destroy(); } catch (Exception ignore) { }
+                    }
+                    sr = SpeechRecognizer.createSpeechRecognizer(ctx);
+                    Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                    i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+                    i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "fr-FR");
+                    i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+                    sr.setRecognitionListener(new RecognitionListener() {
+                        public void onReadyForSpeech(Bundle b) { }
+                        public void onBeginningOfSpeech() { }
+                        public void onRmsChanged(float v) { }
+                        public void onBufferReceived(byte[] b) { }
+                        public void onEndOfSpeech() { }
+                        public void onPartialResults(Bundle b) { }
+                        public void onEvent(int t, Bundle b) { }
+                        public void onError(int e) {
+                            String m = "error";
+                            if (e == SpeechRecognizer.ERROR_NO_MATCH || e == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) m = "no-speech";
+                            else if (e == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) m = "not-allowed";
+                            else if (e == SpeechRecognizer.ERROR_NETWORK || e == SpeechRecognizer.ERROR_NETWORK_TIMEOUT) m = "network";
+                            else if (e == SpeechRecognizer.ERROR_CLIENT) m = "aborted";
+                            call.reject(m);
+                            try { sr.destroy(); } catch (Exception ignore) { }
+                            sr = null;
+                        }
+                        public void onResults(Bundle b) {
+                            ArrayList<String> l = b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                            JSObject r = new JSObject();
+                            r.put("text", (l != null && !l.isEmpty()) ? l.get(0) : "");
+                            call.resolve(r);
+                            try { sr.destroy(); } catch (Exception ignore) { }
+                            sr = null;
+                        }
+                    });
+                    sr.startListening(i);
+                } catch (Exception e) {
+                    call.reject("error");
+                }
+            }
+        });
+    }
+
+    @PluginMethod
+    public void stopListen(PluginCall call) {
+        getActivity().runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try { if (sr != null) sr.stopListening(); } catch (Exception ignore) { }
+            }
+        });
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void smsPermission(PluginCall call) {
+        if (SmsAuto.granted(getContext())) {
+            JSObject r = new JSObject();
+            r.put("granted", true);
+            call.resolve(r);
+        } else {
+            requestPermissionForAlias("sms", call, "smsDone");
+        }
+    }
+
+    @PermissionCallback
+    private void smsDone(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("granted", SmsAuto.granted(getContext()));
+        call.resolve(r);
+    }
+
+    @PluginMethod
+    public void smsConfigure(PluginCall call) {
+        try {
+            android.content.SharedPreferences.Editor e = SmsAuto.prefs(getContext()).edit();
+            e.putBoolean("on", call.getBoolean("on", false));
+            e.putInt("hour", call.getInt("hour", 8));
+            if (call.getData().has("items")) e.putString("queue", call.getData().getJSONArray("items").toString());
+            e.apply();
+            SmsAuto.schedule(getContext());
+            call.resolve(smsInfo());
+        } catch (Exception ex) {
+            call.reject("Programmation impossible : " + ex.getMessage());
+        }
+    }
+
+    private JSObject smsInfo() {
+        JSObject r = new JSObject();
+        android.content.SharedPreferences p = SmsAuto.prefs(getContext());
+        r.put("on", p.getBoolean("on", false));
+        r.put("hour", p.getInt("hour", 8));
+        r.put("granted", SmsAuto.granted(getContext()));
+        try {
+            r.put("queued", new org.json.JSONArray(p.getString("queue", "[]")).length());
+            r.put("sent", new JSObject(p.getString("sent", "{}")));
+        } catch (Exception ignore) {
+            r.put("queued", 0);
+        }
+        return r;
+    }
+
+    @PluginMethod
+    public void smsStatus(PluginCall call) {
+        call.resolve(smsInfo());
+    }
+
+    @PluginMethod
+    public void smsRunNow(final PluginCall call) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                int n = SmsAuto.sendDue(getContext(), true);
+                JSObject r = smsInfo();
+                r.put("count", n);
+                call.resolve(r);
+            }
+        }).start();
+    }
+}
+SAP_EOF
+cat > native/SmsAuto.java <<'SAP_EOF'
+package sn.senafterpay.app;
+
+import android.Manifest;
+import android.app.AlarmManager;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.telephony.SmsManager;
+
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.Iterator;
+import java.util.Locale;
+
+public class SmsAuto extends BroadcastReceiver {
+    static final String PREFS = "sap_sms";
+    static final String ACT = "sn.senafterpay.app.SMS_RUN";
+
+    @Override
+    public void onReceive(final Context c, Intent i) {
+        final PendingResult pr = goAsync();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    sendDue(c, false);
+                    schedule(c);
+                } catch (Exception ignore) {
+                } finally {
+                    pr.finish();
+                }
+            }
+        }).start();
+    }
+
+    static SharedPreferences prefs(Context c) {
+        return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    static boolean granted(Context c) {
+        return ContextCompat.checkSelfPermission(c, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    static void schedule(Context c) {
+        AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+        PendingIntent pi = PendingIntent.getBroadcast(c, 5151, new Intent(c, SmsAuto.class).setAction(ACT),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        SharedPreferences p = prefs(c);
+        if (!p.getBoolean("on", false)) {
+            am.cancel(pi);
+            return;
+        }
+        Calendar cal = Calendar.getInstance();
+        cal.set(Calendar.HOUR_OF_DAY, p.getInt("hour", 8));
+        cal.set(Calendar.MINUTE, 0);
+        cal.set(Calendar.SECOND, 0);
+        cal.set(Calendar.MILLISECOND, 0);
+        if (cal.getTimeInMillis() <= System.currentTimeMillis() + 60000L) cal.add(Calendar.DAY_OF_MONTH, 1);
+        if (Build.VERSION.SDK_INT >= 23) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, cal.getTimeInMillis(), pi);
+        else am.set(AlarmManager.RTC_WAKEUP, cal.getTimeInMillis(), pi);
+    }
+
+    static int sendDue(Context c, boolean force) {
+        SharedPreferences p = prefs(c);
+        if (!p.getBoolean("on", false) || !granted(c)) return 0;
+        Calendar now = Calendar.getInstance();
+        if (!force && now.get(Calendar.HOUR_OF_DAY) < p.getInt("hour", 8)) return 0;
+        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        String today = f.format(now.getTime());
+        Calendar mn = Calendar.getInstance();
+        mn.add(Calendar.DAY_OF_MONTH, -2);
+        String min = f.format(mn.getTime());
+        int ok = 0, bad = 0;
+        try {
+            JSONArray q = new JSONArray(p.getString("queue", "[]"));
+            JSONObject sent = new JSONObject(p.getString("sent", "{}"));
+            SmsManager sm = Build.VERSION.SDK_INT >= 31 ? c.getSystemService(SmsManager.class) : SmsManager.getDefault();
+            for (int k = 0; k < q.length(); k++) {
+                JSONObject it = q.getJSONObject(k);
+                String key = it.getString("key"), d = it.getString("date");
+                if (sent.has(key) || d.compareTo(today) > 0 || d.compareTo(min) < 0) continue;
+                try {
+                    ArrayList<String> parts = sm.divideMessage(it.getString("text"));
+                    sm.sendMultipartTextMessage(it.getString("phone"), null, parts, null, null);
+                    sent.put(key, System.currentTimeMillis());
+                    ok++;
+                    try { Thread.sleep(1500); } catch (Exception ignore) { }
+                } catch (Exception e) {
+                    bad++;
+                }
+            }
+            long cut = System.currentTimeMillis() - 90L * 86400000L;
+            Iterator<String> ks = sent.keys();
+            ArrayList<String> old = new ArrayList<String>();
+            while (ks.hasNext()) { String kk = ks.next(); if (sent.optLong(kk) < cut) old.add(kk); }
+            for (String kk : old) sent.remove(kk);
+            p.edit().putString("sent", sent.toString()).apply();
+        } catch (Exception e) {
+            bad++;
+        }
+        if (ok + bad > 0) notifyDone(c, ok, bad);
+        return ok;
+    }
+
+    static void notifyDone(Context c, int ok, int bad) {
+        try {
+            NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(new NotificationChannel("sap_sms", "Rappels SMS", NotificationManager.IMPORTANCE_DEFAULT));
+            }
+            Intent open = c.getPackageManager().getLaunchIntentForPackage(c.getPackageName());
+            PendingIntent pi = PendingIntent.getActivity(c, 1, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            String body = ok + " SMS de rappel envoye(s)" + (bad > 0 ? ", " + bad + " en echec" : "");
+            NotificationCompat.Builder b = new NotificationCompat.Builder(c, "sap_sms")
+                    .setSmallIcon(c.getApplicationInfo().icon).setContentTitle("SenAfterPay").setContentText(body)
+                    .setAutoCancel(true).setContentIntent(pi);
+            if (NotificationManagerCompat.from(c).areNotificationsEnabled()) nm.notify(7788, b.build());
+        } catch (Exception ignore) { }
+    }
+}
+SAP_EOF
+cat > native/MainActivity.java <<'SAP_EOF'
+package sn.senafterpay.app;
+
+import android.os.Bundle;
+import android.webkit.WebView;
+import androidx.activity.OnBackPressedCallback;
+import com.getcapacitor.BridgeActivity;
+
+public class MainActivity extends BridgeActivity {
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(StepCounterPlugin.class);
+        registerPlugin(SapSharePlugin.class);
+        super.onCreate(savedInstanceState);
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                try {
+                    final WebView wv = getBridge().getWebView();
+                    wv.evaluateJavascript("(function(){try{return window.__sapBack?window.__sapBack():false}catch(e){return false}})()",
+                        new android.webkit.ValueCallback<String>() {
+                            @Override
+                            public void onReceiveValue(String v) {
+                                if (!"true".equals(v)) moveTaskToBack(true);
+                            }
+                        });
+                } catch (Exception e) {
+                    moveTaskToBack(true);
+                }
+            }
+        });
+    }
+}
+SAP_EOF
+cp "$GITHUB_WORKSPACE/logo.png" native/logo.png
