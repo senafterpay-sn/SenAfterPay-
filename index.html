@@ -3455,7 +3455,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='15-11 · v47';
+const APP_VER='15-11 · v48';
 const apkInfo=()=>{try{return initSapn()?(SAPN.smsStatus?'APK à jour (retour natif actif)':'APK ANCIENNE : à reconstruire et réinstaller'):'navigateur (pas d\'APK)'}catch(e){return 'inconnu'}};
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
@@ -3617,12 +3617,12 @@ function openGuided(){
       shell(`<div class="tiles" style="grid-template-columns:1fr"><button type="button" class="tile huge c-esp" data-m="Espèces">${gsvg('cash')}<b style="font-size:28px">Espèces</b></button><button type="button" class="tile huge c-wave" data-m="Wave"><b style="font-size:34px">Wave</b></button><button type="button" class="tile huge c-om" data-m="Orange Money"><b style="font-size:30px">Orange Money</b></button></div>`);
       o.el.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{g.method=b.dataset.m;next()});
     }else if(st==='recap'){
-      const p=prod(),t=total(),sig=t+'|'+g.dep+'|'+g.months,sch=g.type==='credit'?((g.cs&&g.cs.sig===sig)?g.cs.list:buildSchedule(t,g.dep,g.months,addMonths(today(),1),{m:1})):[];
+      const p=prod(),t=total(),sd=g.date||today(),sig=t+'|'+g.dep+'|'+g.months+'|'+sd,sch=g.type==='credit'?((g.cs&&g.cs.sig===sig)?g.cs.list:buildSchedule(t,g.dep,g.months,addMonths(sd,1),{m:1})):[];
       const payNow=g.type==='credit'?g.dep:t;
-      shell(`<div class="gd-card"><div class="row2"><span>${esc(g.client.name)}</span><b>${g.qty} × ${esc(p.name)}</b></div><div class="tot2">${fmtN(t)} FCFA</div>
+      shell(`<div class="gd-card"><div class="row2"><span>${esc(g.client.name)}</span><b>${g.qty} × ${esc(p.name)}</b></div><div class="tot2">${fmtN(t)} FCFA</div><div class="row2"><span>Date de vente</span><b>${fdate(sd)}</b></div>
         ${g.type==='credit'?`<div class="row2"><span>Acompte</span><b>${fmtN(g.dep)}</b></div>${sch.map(e=>`<div class="row2"><span>${e.n}. ${fdate(e.due)}</span><b>${fmtN(e.amount)}</b></div>`).join('')}`:`<div class="row2"><span>Comptant</span><b>${esc(g.method)}</b></div>`}</div>
-        <button type="button" class="gd-no" id="ged" style="margin-bottom:8px">✏️ Modifier le prix et les dates</button>
-        <div id="gem" class="gd-card" hidden style="margin-bottom:10px"><div class="row2"><span>Prix d'une pièce</span><input id="gep" inputmode="numeric" value="${unit()}" style="width:130px;text-align:right"></div>
+        <button type="button" class="gd-no" id="ged" style="margin-bottom:8px">✏️ Modifier la date, le prix et les échéances</button>
+        <div id="gem" class="gd-card" ${g.openEd?'':'hidden'} style="margin-bottom:10px"><div class="row2"><span>Date de vente</span><input type="date" id="gsd" value="${sd}" style="width:160px"></div><div class="row2"><span>Prix d'une pièce</span><input id="gep" inputmode="numeric" value="${unit()}" style="width:130px;text-align:right"></div>
         ${g.type==='credit'?`<div class="row2"><span>Acompte</span><input id="ged0" inputmode="numeric" value="${g.dep}" style="width:130px;text-align:right"></div>${sch.map((e,i)=>`<div class="row2" style="gap:6px"><input type="date" data-ed="${i}" value="${e.due}" style="flex:1;min-width:0"><input inputmode="numeric" data-ea="${i}" value="${e.amount}" style="width:110px;text-align:right"></div>`).join('')}`:''}
         <div class="gd-err" id="gee"></div><button type="button" class="btn" id="geok">Appliquer</button></div>
         <div class="gd-err" id="gp" style="font-weight:600;color:var(--ink)"></div><div class="gd-err" id="ge"></div><button type="button" class="gd-ok" id="go" aria-label="Valider la vente">${gsvg('ok')}</button><button type="button" class="gd-no" id="gx">Recommencer</button>`);
@@ -3630,7 +3630,9 @@ function openGuided(){
       $('#geok',o.el).onclick=()=>{
         const n_=id=>Math.max(0,Math.round(Number(String(($('#'+id,o.el)||{}).value||'').replace(/\s/g,'').replace(',','.'))||0)),er=$('#gee',o.el);
         const pr=n_('gep');if(!pr){er.textContent='Mettez un prix.';return}
-        const T=pr*g.qty;
+        const T=pr*g.qty,nd=($('#gsd',o.el)||{}).value||'';
+        if(!nd){er.textContent='Mettez la date de vente.';return}
+        if(nd!==sd){g.date=nd;g.price=pr;if(g.type==='credit')g.dep=n_('ged0');g.cs=null;g.openEd=1;draw();return}
         if(g.type==='credit'){
           const dep=n_('ged0'),L=[...o.el.querySelectorAll('[data-ed]')].map(x=>({n:+x.dataset.ed+1,due:x.value,amount:0}));
           const am=[...o.el.querySelectorAll('[data-ea]')].map(x=>Math.round(Number(String(x.value).replace(/\s/g,''))||0));
@@ -3639,15 +3641,15 @@ function openGuided(){
           if(L.some(x=>x.amount<=0)){er.textContent='Chaque échéance doit avoir un montant.';return}
           const sum=dep+L.reduce((a,x)=>a+x.amount,0);
           if(sum!==T){er.textContent='Acompte + échéances = '+fmtN(sum)+' mais le total est '+fmtN(T)+'. Ajustez les montants.';return}
-          g.price=pr;g.dep=dep;g.cs={sig:T+'|'+dep+'|'+g.months,list:L};
+          g.price=pr;g.dep=dep;g.cs={sig:T+'|'+dep+'|'+g.months+'|'+sd,list:L};
         }else g.price=pr;
-        draw();
+        g.openEd=0;draw();
       };
       const gpEl=$('#gp',o.el);
       const gpDraw=()=>{gpEl.innerHTML=g.pos?'📍 Position du client enregistrée (±'+g.pos.acc+' m)':g.posBusy?'📍 Recherche de la position…':'<button type="button" class="gd-no" id="gpb">📍 Enregistrer la position du client</button>'+(g.posErr?'<div style="color:var(--bad)">'+esc(g.posErr)+'</div>':'');const b=$('#gpb',o.el);if(b)b.onclick=()=>{g.posTried=1;gpGet()}};
       const gpGet=()=>{g.posBusy=1;g.posErr='';gpDraw();getPos().then(p=>{g.pos=p}).catch(e=>{g.posErr=String((e&&e.message)||e)}).finally(()=>{g.posBusy=0;if(document.body.contains(gpEl))gpDraw()})};
       gpDraw();if(!g.pos&&!g.posBusy&&!g.posTried){g.posTried=1;gpGet()}
-      $('#gx',o.el).onclick=()=>{g.client=null;g.pid='';g.type='';g.price=0;g.pos=null;g.posTried=0;go('phone')};
+      $('#gx',o.el).onclick=()=>{g.client=null;g.pid='';g.type='';g.price=0;g.pos=null;g.posTried=0;g.date='';g.cs=null;g.openEd=0;go('phone')};
       $('#go',o.el).onclick=async()=>{
         const ge=$('#ge',o.el),btn=$('#go',o.el);ge.textContent='';
         if(stockOf(p.id)<g.qty){ge.textContent='Stock insuffisant.';return}
@@ -3658,7 +3660,7 @@ function openGuided(){
         btn.disabled=true;
         let slot;const sid=uid('s'),num_=nextNumber('V');
         try{slot=await takePage(bk?bk.num:null,bk?bk.chief:g.seller,sid,tel,bk?bk.owner:(ME.id||''))}catch(e){console.warn('takePage',e);ge.textContent=whyFail(e);btn.disabled=false;return}
-        const date=today(),u=unit(),lines=[{productId:p.id,name:p.name,qty:g.qty,price:u,listPrice:cat()}];
+        const date=g.date||today(),u=unit(),lines=[{productId:p.id,name:p.name,qty:g.qty,price:u,listPrice:cat()}];
         if(u!==cat())await logAct('Prix modifié','F'+slot.f+'P'+slot.p+' · '+p.name+' : '+fmtN(cat())+' → '+fmtN(u));
         await put('sales',sid,{number:num_,date,clientId:g.client.id,agent:ME.id,byAdmin:ME.isAdmin,fnum:slot.f,page:slot.p,owner:slot.o,seller:g.seller,lines,total:t,type:g.type,deposit:g.type==='credit'?g.dep:0,months:sch.length||0,schedule:sch,created:new Date().toISOString(),guided:true,...(g.pos?{lat:g.pos.lat,lng:g.pos.lng,acc:g.pos.acc}:{})});
         if(g.pos){const cc=byId(S.clients,g.client.id);if(cc&&cc.lat==null){try{await put('clients',cc.id,{...cc,lat:g.pos.lat,lng:g.pos.lng,acc:g.pos.acc,geoAt:new Date().toISOString(),geo:geoUrl(g.pos)})}catch(e){}}}
