@@ -3455,7 +3455,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='15-11 · v48';
+const APP_VER='15-11 · v49';
 const apkInfo=()=>{try{return initSapn()?(SAPN.smsStatus?'APK à jour (retour natif actif)':'APK ANCIENNE : à reconstruire et réinstaller'):'navigateur (pas d\'APK)'}catch(e){return 'inconnu'}};
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
@@ -3666,7 +3666,7 @@ function openGuided(){
         if(g.pos){const cc=byId(S.clients,g.client.id);if(cc&&cc.lat==null){try{await put('clients',cc.id,{...cc,lat:g.pos.lat,lng:g.pos.lng,acc:g.pos.acc,geoAt:new Date().toISOString(),geo:geoUrl(g.pos)})}catch(e){}}}
         if(payNow>0)await put('payments',uid('y'),{number:nextNumber('R'),saleId:sid,clientId:g.client.id,amount:payNow,kind:g.type==='credit'?'acompte':'comptant',method:g.method,ref:'',collector:ME.isAdmin?DIRECT:g.seller,date,time:new Date().toISOString(),agent:ME.id,byAdmin:ME.isAdmin});
         await put('moves',uid('m'),{productId:p.id,qty:-g.qty,type:'vente',date,note:num_,agent:ME.id});
-        g.ref='F'+slot.f+'P'+slot.p;g.sid=sid;g.pos=null;g.posTried=0;g.step='done';draw();playVoice('done');
+        g.ref='F'+slot.f+'P'+slot.p;g.sid=sid;g.pos=null;g.posTried=0;g.step='done';draw();playVoice('done');let tr=0;const showInv=()=>{if(byId(S.sales,sid))openInvoice(sid);else if(++tr<10)setTimeout(showInv,300)};setTimeout(showInv,250);
       };
     }else if(st==='done'){
       shell(`<div class="gd-done"><div class="chk">${gsvg('ok')}</div><div class="ref">${esc(g.ref)}</div></div><button type="button" class="btn" id="gv2">Voir la facture</button><button type="button" class="gd-ok" id="gn2" aria-label="Nouvelle vente">${gsvg('cash')}</button>`,{noback:true});
