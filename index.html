@@ -3455,7 +3455,8 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='14-11 · v46 retour corrigé';
+const APP_VER='15-11 · v47';
+const apkInfo=()=>{try{return initSapn()?(SAPN.smsStatus?'APK à jour (retour natif actif)':'APK ANCIENNE : à reconstruire et réinstaller'):'navigateur (pas d\'APK)'}catch(e){return 'inconnu'}};
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
 const speechAPI=()=>SAPN||window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -3552,7 +3553,7 @@ function openGuided(){
         <div class="gd-err" id="ge"></div>
         <button type="button" class="gd-ok" id="go" aria-label="Valider">${gsvg('ok')}</button>
         <button type="button" class="gd-no" id="gx">Passer, sans nom</button>
-        <div class="gd-sub" style="font-size:11px;opacity:.55">Version ${APP_VER}</div>`);
+        <div class="gd-sub" style="font-size:11px;opacity:.55">Version ${APP_VER} · ${apkInfo()}</div>`);
       const mic=$('#gmic',o.el),inp=$('#gnm',o.el),err=m=>{$('#ge',o.el).textContent=m||''},note=t=>{$('#gnote',o.el).textContent=t},lbl=t=>{$('#gml',o.el).textContent=t};
       // Dictée automatique : si le téléphone ne sait pas l'écouter, on passe à l'enregistrement de la voix.
       mic.onfatal=()=>{recMode=true;note(baseNote());err('')};
@@ -3677,7 +3678,7 @@ function openSimpleSettings(){
   const o=sheet('Mode simple','',(el,o)=>{o.refresh=draw});
   function draw(){
     const names=staffNames(),cur=lsg(SELLER_KEY);
-    setBody(o,`<p class="note" style="margin-top:0">Version de l'application : ${APP_VER}.</p><p class="note">Pour les employés qui ne lisent pas : la vente se fait avec des photos, des chiffres et la voix du dirigeant en wolof.</p>
+    setBody(o,`<p class="note" style="margin-top:0">Version de l'application : ${APP_VER} · ${apkInfo()}.</p><p class="note">Pour les employés qui ne lisent pas : la vente se fait avec des photos, des chiffres et la voix du dirigeant en wolof.</p>
     <div class="card"><div class="tot"><span>Mode simple sur ce téléphone</span><b>${isSimple()?'Activé':'Désactivé'}</b></div>
     <div style="height:8px"></div><button class="btn" id="ts">${isSimple()?'Désactiver':'Activer'}</button></div>
     <label for="se">Employé qui utilise ce téléphone</label><select id="se"><option value="">Choisir…</option>${names.map(n=>`<option ${n===cur?'selected':''}>${esc(n)}</option>`).join('')}</select>
