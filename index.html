@@ -2852,7 +2852,7 @@ function openPayment(pid){
       try{return await invoiceImage(tmp)}finally{tmp.remove()}};
     const rName='recu-'+p.number+'.png',rPh=phoneIntl(c&&c.phone);
     $('#sv',o.el).onclick=async()=>{try{toast('Création de l\'image…');const r=await deliverImage(await rImg(),rName,{});if(deliverMsg[r])toast(deliverMsg[r])}catch(e){toast('Image impossible à créer sur ce téléphone')}};
-    $('#wa',o.el).onclick=async()=>{try{toast('Création de l\'image…');const r=await deliverImage(await rImg(),rName,{phone:rPh,text:receiptText(p,s,c,st),title:'Reçu '+p.number});if(deliverMsg[r])toast((rPh?'':'Pas de numéro WhatsApp · ')+deliverMsg[r])}catch(e){window.open(waLink(c,receiptText(p,s,c,st)),'_blank');toast('Image impossible : message texte ouvert')}};
+    $('#wa',o.el).onclick=async()=>{try{toast('Création de l\'image…');const r=await deliverImage(await rImg(),rName,{phone:rPh,name:c&&c.name,text:receiptText(p,s,c,st),title:'Reçu '+p.number});if(deliverMsg[r])toast((rPh?'':'Pas de numéro WhatsApp · ')+deliverMsg[r])}catch(e){window.open(waLink(c,receiptText(p,s,c,st)),'_blank');toast('Image impossible : message texte ouvert')}};
     $('#rsms',o.el).onclick=()=>{if(!rPh){toast('Ce client n\'a pas de numéro');return}location.href='sms:+'+rPh+'?body='+encodeURIComponent(receiptText(p,s,c,st))};
     const cx=$('#cx',o.el);
     if(cx)cx.onclick=async()=>{const r=val(o.el,'cr').trim();if(r.length<3){$('#cerr',o.el).textContent='Indiquez le motif.';return}
@@ -2955,7 +2955,7 @@ async function deliverImage(blob,name,o){
   o=o||{};const ph=o.phone||'';
   initSapn();
   if(SAPN){
-    if(ph){try{const r=await SAPN.shareImage({data:await blobB64(blob),name,text:o.text||'',phone:ph,pkg:waPkg()});return r&&r.mode==='chat'?'chat':'whatsapp'}catch(e){}}
+    if(ph){try{const r=await SAPN.shareImage({data:await blobB64(blob),name,text:o.text||'',phone:ph,label:o.name||'',pkg:waPkg()});return r&&r.mode==='chat'?'chat':'whatsapp'}catch(e){}}
     try{await SAPN.saveImage({data:await blobB64(blob),name});return'gallery'}catch(e){window.__imgErr='Enregistrement refusé : '+String((e&&e.message)||e)}
   }
   const file=new File([blob],name,{type:'image/png'});
@@ -2963,7 +2963,7 @@ async function deliverImage(blob,name,o){
   showImageOverlay(blob,name,(window.__imgErr?window.__imgErr+' · ':'')+(SAPN?'':'Application Android non détectée · ')+(ph?'Le partage direct n\'est pas possible ici. Enregistrez l\'image puis envoyez-la sur WhatsApp.':''));
   return'overlay';
 }
-const deliverMsg={chat:'Image envoyée dans la discussion du client : touchez Envoyer dans WhatsApp',whatsapp:'WhatsApp ouvert : touchez Envoyer',shared:'Choisissez WhatsApp pour envoyer',gallery:'Image enregistrée dans la galerie (dossier SenAfterPay)',overlay:'',cancel:''};
+const deliverMsg={chat:'Image prête dans la discussion du client : touchez Envoyer. Si WhatsApp affiche « Envoyer à », choisissez le client',whatsapp:'WhatsApp ouvert : touchez Envoyer',shared:'Choisissez WhatsApp pour envoyer',gallery:'Image enregistrée dans la galerie (dossier SenAfterPay)',overlay:'',cancel:''};
 // Un seul clic : crée l'image de la facture et l'envoie au client sur WhatsApp (s'il a un numéro), sinon l'enregistre dans la galerie.
 async function sendInvoiceImage(el,s,c,st){
   const name='facture-'+ref(s)+'.png',ph=phoneIntl(c&&c.phone);
@@ -2971,7 +2971,7 @@ async function sendInvoiceImage(el,s,c,st){
     toast('Création de l\'image…');
     const tmp=document.createElement('div');tmp.style.cssText='position:fixed;left:-10000px;top:0;width:800px;background:#fff';tmp.innerHTML=invoiceHTML(s,c,st);document.body.appendChild(tmp);
     let blob;try{blob=await invoiceImage(tmp.querySelector('.fx'))}finally{tmp.remove()}
-    const r=await deliverImage(blob,name,{phone:ph,text:invoiceText(s,c,st),title:'Facture '+ref(s)});
+    const r=await deliverImage(blob,name,{phone:ph,name:c&&c.name,text:invoiceText(s,c,st),title:'Facture '+ref(s)});
     if(deliverMsg[r])toast((ph?'':'Pas de numéro WhatsApp · ')+deliverMsg[r]);
   }catch(e){toast('Image impossible à créer sur ce téléphone')}
 }
@@ -3011,7 +3011,7 @@ async function sendReminder(e){
   try{
     put('reminders',e.sale.id+'_'+e.n,{saleId:e.sale.id,n:e.n,channel:'wa',at:new Date().toISOString(),by:ME.id||''}).catch(()=>{});
     toast('Création de l\'image du rappel…');
-    const blob=await reminderImage(e),r=await deliverImage(blob,'rappel-'+ref(e.sale)+'-t'+e.n+'.png',{phone:ph,text:reminderText(e),title:'Rappel de paiement'});
+    const blob=await reminderImage(e),r=await deliverImage(blob,'rappel-'+ref(e.sale)+'-t'+e.n+'.png',{phone:ph,name:e.client&&e.client.name,text:reminderText(e),title:'Rappel de paiement'});
     if(deliverMsg[r])toast(deliverMsg[r]);
   }catch(x){window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(reminderText(e)),'_blank');toast('Image impossible : message texte ouvert')}
 }
@@ -3455,7 +3455,7 @@ const GI={
   cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01"/>'
 };
 const gsvg=k=>`<svg viewBox="0 0 24 24" aria-hidden="true">${GI[k]}</svg>`;
-const APP_VER='15-11 · v49';
+const APP_VER='18-11 · v50';
 const apkInfo=()=>{try{return initSapn()?(SAPN.smsStatus?'APK à jour (retour natif actif)':'APK ANCIENNE : à reconstruire et réinstaller'):'navigateur (pas d\'APK)'}catch(e){return 'inconnu'}};
 const fmtN=n=>String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g,' ');
 /* Dictée du nom : le téléphone écoute puis écrit le nom (Chrome, internet nécessaire). Le nom reste modifiable au clavier. */
