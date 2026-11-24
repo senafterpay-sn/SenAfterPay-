@@ -43,7 +43,7 @@ python3 patch.py
 npx cap sync android
 SAP_EOF
 cat > patch.py <<'SAP_EOF'
-"""Ajoute au projet Android genere par Capacitor : permissions, capteur de pas, partage WhatsApp, MainActivity."""
+"""Ajoute au projet Android généré par Capacitor : permissions, capteur de pas, partage WhatsApp, MainActivity."""
 import re, shutil, pathlib
 root = pathlib.Path(__file__).parent / 'android' / 'app' / 'src' / 'main'
 java = root / 'java' / 'sn' / 'senafterpay' / 'app'
@@ -61,6 +61,8 @@ extra = '''
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
@@ -82,7 +84,7 @@ if 'SmsAuto' not in t:
     </application>''')
 mf.write_text(t, encoding='utf-8')
 
-# --- icone et ecran de demarrage : logo SenAfterPay ---
+# --- icône et écran de démarrage : logo SenAfterPay ---
 from PIL import Image, ImageDraw
 res = root / 'res'
 logo = Image.open(pathlib.Path(__file__).parent / 'native' / 'logo.png').convert('RGB')
@@ -233,6 +235,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.provider.ContactsContract;
@@ -264,11 +267,18 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
 
+/**
+ * Fonctions natives de SenAfterPay :
+ *  - saveImage : enregistre une image dans la galerie (Pictures/SenAfterPay) ;
+ *  - shareImage : envoie une image directement dans la discussion WhatsApp d'un numéro ;
+ *  - notify / notifyPermission : notifications du directeur (alertes de suivi).
+ */
 @CapacitorPlugin(
     name = "SapShare",
     permissions = {
         @Permission(alias = "mic", strings = { Manifest.permission.RECORD_AUDIO }),
-        @Permission(alias = "sms", strings = { Manifest.permission.SEND_SMS })
+        @Permission(alias = "sms", strings = { Manifest.permission.SEND_SMS }),
+        @Permission(alias = "contacts", strings = { Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS })
     }
 )
 public class SapSharePlugin extends Plugin {
@@ -334,14 +344,71 @@ public class SapSharePlugin extends Plugin {
         }
     }
 
+    /* WhatsApp n'ouvre la discussion d'un numéro (extra "jid") que si ce numéro est dans les contacts du téléphone.
+       Sinon il affiche sa liste « Envoyer à… ». On crée donc le contact du client avant d'envoyer. */
+    private boolean hasContact(String phone) {
+        Cursor c = null;
+        try {
+            Uri u = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode("+" + phone));
+            c = getContext().getContentResolver().query(u, new String[]{ContactsContract.PhoneLookup._ID}, null, null, null);
+            return c != null && c.moveToFirst();
+        } catch (Exception e) {
+            return true;
+        } finally {
+            if (c != null) c.close();
+        }
+    }
+
+    private boolean ensureContact(String phone, String label) {
+        try {
+            if (phone.isEmpty() || hasContact(phone)) return false;
+            ArrayList<android.content.ContentProviderOperation> ops = new ArrayList<>();
+            ops.add(android.content.ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
+                    .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null)
+                    .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null).build());
+            ops.add(android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                    .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                    .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
+                    .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, (label == null || label.isEmpty()) ? ("Client +" + phone) : label).build());
+            ops.add(android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                    .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                    .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+                    .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, "+" + phone)
+                    .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE).build());
+            getContext().getContentResolver().applyBatch(ContactsContract.AUTHORITY, ops);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     @PluginMethod
     public void shareImage(PluginCall call) {
+        String ph = call.getString("phone", "").replaceAll("\\D", "");
+        if (!ph.isEmpty() && getPermissionState("contacts") != PermissionState.GRANTED) {
+            requestPermissionForAlias("contacts", call, "shareAfterPerm");
+            return;
+        }
+        doShare(call);
+    }
+
+    @PermissionCallback
+    private void shareAfterPerm(PluginCall call) {
+        doShare(call);
+    }
+
+    private void doShare(PluginCall call) {
         try {
             String name = safe(call.getString("name", "facture.png"));
             byte[] data = decode(call.getString("data", ""));
             String text = call.getString("text", "");
             String phone = call.getString("phone", "").replaceAll("\\D", "");
             Context ctx = getContext();
+            if (!phone.isEmpty() && getPermissionState("contacts") == PermissionState.GRANTED) {
+                if (ensureContact(phone, call.getString("label", ""))) {
+                    try { Thread.sleep(2500); } catch (InterruptedException ie) { }
+                }
+            }
             File dir = new File(ctx.getCacheDir(), "partage");
             dir.mkdirs();
             File f = new File(dir, name);
